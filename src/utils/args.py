@@ -1,0 +1,145 @@
+import os
+from dataclasses import dataclass
+
+@dataclass
+class PPOArgs:
+    exp_name: str = os.path.basename(__file__)[: -len(".py")]
+    """the name of this experiment"""
+    seed: int = 1
+    """seed of the experiment"""
+    torch_deterministic: bool = True
+    """if toggled, `torch.backends.cudnn.deterministic=False`"""
+    cuda: bool = True
+    """if toggled, cuda will be enabled by default"""
+    capture_video: bool = False
+    """whether to capture videos of the agent performances (check out `videos` folder)"""
+
+    # Algorithm specific arguments
+    env_id: str = "Breakout-v5"
+    """the id of the environment"""
+    total_timesteps: int = 10000000
+    """total timesteps of the experiments"""
+    learning_rate: float = 2.5e-4
+    """the learning rate of the optimizer"""
+    num_envs: int = 128
+    """the number of parallel game environments"""
+    num_steps: int = 32
+    """the number of steps to run in each environment per policy rollout"""
+    anneal_lr: bool = True
+    """Toggle learning rate annealing for policy and value networks"""
+    gamma: float = 0.99
+    """the discount factor gamma"""
+    gae_lambda: float = 0.95
+    """the lambda for the general advantage estimation"""
+    num_minibatches: int = 16
+    """the number of mini-batches"""
+    update_epochs: int = 4
+    """the K epochs to update the policy"""
+    norm_adv: bool = True
+    """Toggles advantages normalization"""
+    clip_coef: float = 0.1
+    """the surrogate clipping coefficient"""
+    clip_vloss: bool = True
+    """Toggles whether or not to use a clipped loss for the value function, as per the paper."""
+    ent_coef: float = 0.01
+    """coefficient of the entropy"""
+    vf_coef: float = 0.5
+    """coefficient of the value function"""
+    max_grad_norm: float = 0.5
+    """the maximum norm for the gradient clipping"""
+    target_kl: float = None
+    """the target KL divergence threshold"""
+
+
+    # Agent Args
+    use_ln: bool = False
+    """whether to use layer normalization"""
+    cnn_type: str = "atari"
+    """the type of the CNN"""
+    network_size: str = "small" # small, medium, large
+    """the size of the network"""
+    shared_trunk: bool = True
+    """whether to use a shared trunk agent"""
+
+    # to be filled in runtime
+    batch_size: int = 0
+    """the batch size (computed in runtime)"""
+    minibatch_size: int = 0
+    """the mini-batch size (computed in runtime)"""
+    num_iterations: int = 0
+    """the number of iterations (computed in runtime)"""
+    measure_burnin: int = 3
+    """Number of burn-in iterations for speed measure."""
+
+    compile: bool = True
+    """whether to use torch.compile."""
+    cudagraphs: bool = True
+    """whether to use cudagraphs on top of compile."""
+    
+    
+@dataclass
+class PQNArgs:
+    exp_name: str = os.path.basename(__file__)[: -len(".py")]
+    """the name of this experiment"""
+    seed: int = 1
+    """seed of the experiment"""
+    torch_deterministic: bool = True
+    """if toggled, `torch.backends.cudnn.deterministic=False`"""
+    cuda: bool = True
+    """if toggled, cuda will be enabled by default"""
+    capture_video: bool = False
+    """whether to capture videos of the agent performances (check out `videos` folder)"""
+
+    # Algorithm specific arguments
+    env_id: str = "Breakout-v5"
+    """the id of the environment"""
+    total_timesteps: int = 10000000
+    """total timesteps of the experiments"""
+    learning_rate: float = 2.5e-4
+    """the learning rate of the optimizer"""
+    num_envs: int = 128
+    """the number of parallel game environments"""
+    num_steps: int = 32
+    """the number of steps to run in each environment per policy rollout"""
+    anneal_lr: bool = False
+    """Toggle learning rate annealing for policy and value networks"""
+    gamma: float = 0.99
+    """the discount factor gamma"""
+    num_minibatches: int = 32
+    """the number of mini-batches"""
+    update_epochs: int = 2
+    """the K epochs to update the policy"""
+    max_grad_norm: float = 10.0
+    """the maximum norm for the gradient clipping"""
+    start_e: float = 1
+    """the starting epsilon for exploration"""
+    end_e: float = 0.01
+    """the ending epsilon for exploration"""
+    exploration_fraction: float = 0.10
+    """the fraction of `total_timesteps` it takes from start_e to end_e"""
+    q_lambda: float = 0.65
+    """the lambda for the Q-Learning algorithm"""
+    
+    # Agent Args
+    use_ln: bool = True
+    """whether to use layer normalization"""
+    cnn_type: str = "atari"
+    """the type of the CNN"""
+    network_size: str = "small" # small, medium, large
+    """the size of the network"""
+
+    # to be filled in runtime
+    batch_size: int = 0
+    """the batch size (computed in runtime)"""
+    minibatch_size: int = 0
+    """the mini-batch size (computed in runtime)"""
+    num_iterations: int = 0
+    """the number of iterations (computed in runtime)"""
+
+    measure_burnin: int = 3
+    """Number of burn-in iterations for speed measure."""
+
+    compile: bool = True
+    """whether to use torch.compile."""
+    cudagraphs: bool = True
+    """whether to use cudagraphs on top of compile."""

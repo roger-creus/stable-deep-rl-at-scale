@@ -1,0 +1,14 @@
+gymnasium[atari,accept-rom-license]
+matplotlib
+moviepy
+numpy<2.0
+pandas
+protobuf
+pygame
+stable-baselines3
+tqdm
+wandb
+torchrl-nightly
+tensordict-nightly
+tyro
+opencv-python

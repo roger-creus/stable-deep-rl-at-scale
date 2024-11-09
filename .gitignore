@@ -1,0 +1,9 @@
+slurm_templates/*
+batch_jobs/*
+cluster_config.json
+all_commands.sh
+submit_job.sh
+run_config.json
+wandb/*
+*.sif
+*.pyc
