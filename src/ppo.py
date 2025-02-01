@@ -1,6 +1,7 @@
 # docs and experiment results can be found at https://docs.cleanrl.dev/rl-algorithms/ppo/#ppo_atari_envpoolpy
 import os
 os.environ["TORCHDYNAMO_INLINE_INBUILT_NN_MODULES"] = "1"
+os.environ["WANDB__SERVICE_WAIT"] = "300"
 
 import os
 import random
@@ -25,7 +26,7 @@ from utils.compute_hns import _compute_hns
 from utils.utils import parse_network_size
 from utils.args import PPOArgs
 from utils.wrappers import RecordEpisodeStatistics
-from utils.compute_churn import compute_ppo_metrics
+from utils.compute_churn import compute_ppo_metrics, compute_ranks_from_features, compute_visitation_distribution
 from models.agent import SharedTrunkPPOAgent, DecoupledPPOAgent
 
 Distribution.set_default_validate_args(False)
@@ -147,14 +148,29 @@ update = tensordict.nn.TensorDictModule(
 if __name__ == "__main__":
     args = tyro.cli(PPOArgs)
     batch_size = int(args.num_envs * args.num_steps)
-    args.minibatch_size = batch_size // args.num_minibatches
+    
+    if args.minibatch_size == 0:
+        batch_mode = "fixed_numMinibatches"
+        args.minibatch_size = batch_size // args.num_minibatches
+    else:
+        batch_mode = "fixed_minibatchSize"
+        args.num_minibatches = batch_size // args.minibatch_size
+
     args.batch_size = args.num_minibatches * args.minibatch_size
     args.num_iterations = args.total_timesteps // args.batch_size
-    run_name = f"PPO_CNN:{args.cnn_type}_SIZE:{args.network_size}_NENVS:{args.num_envs}_NSTEPS:{args.num_steps}_NEPOCHS:{args.update_epochs}_NMBS:{args.num_minibatches}_GAE:{args.gae_lambda}"
+    args.log_iterations = np.linspace(0, args.num_iterations, num=args.num_logs, endpoint=False, dtype=int)
+    args.log_iterations = np.unique(args.log_iterations)
+    args.log_iterations = np.insert(args.log_iterations, 0, 1)
+    args.log_iterations_img = np.linspace(0, args.num_iterations, num=args.num_img_logs, endpoint=False, dtype=int)
+    args.log_iterations_img = np.unique(args.log_iterations_img)
+    args.log_iterations_img = np.insert(args.log_iterations_img, 0, 1)
+    
+    
+    run_name = f"PPO_CNN:{args.cnn_type}_SIZE:{args.network_size}_NENVS:{args.num_envs}_NSTEPS:{args.num_steps}_MODE:{batch_mode}_NEPOCHS:{args.update_epochs}_NMBS:{args.num_minibatches}_GAE:{args.gae_lambda}"
     args.run_name = run_name
 
     wandb.init(
-        project="scaling_ppo",
+        project=f"ppo_{batch_mode}",
         name=run_name + f"_{args.env_id}_{int(time.time())}_s{args.seed}",
         config=vars(args),
         save_code=True,
@@ -182,7 +198,6 @@ if __name__ == "__main__":
     envs.single_observation_space = envs.observation_space
     envs = RecordEpisodeStatistics(envs)
     assert isinstance(envs.action_space, gym.spaces.Discrete), "only discrete action space is supported"
-
 
     ####### Agent #######
     cnn_channels, trunk_hidden_size, trunk_num_layers = parse_network_size(args.network_size)
@@ -258,23 +273,48 @@ if __name__ == "__main__":
 
         # Optimizing the policy and value network
         clipfracs = []
+        kls= []
+        gns = []
         for epoch in range(args.update_epochs):
             b_inds = torch.randperm(container_flat.shape[0], device=device).split(args.minibatch_size)
             for b in b_inds:
                 container_local = container_flat[b]
                 out = update(container_local, tensordict_out=tensordict.TensorDict())
+                
+                clipfracs.append(out["clipfrac"].cpu().numpy())
+                kls.append(out["approx_kl"].cpu().numpy())
+                gns.append(out["gn"].cpu().numpy())
                 if args.target_kl is not None and out["approx_kl"] > args.target_kl:
                     break
             else:
                 continue
             break
         
-        with torch.no_grad():
-            max_len = min(4096, container_flat["obs"].shape[0])
-            container_flat = container_flat[:max_len]
-            metrics = compute_ppo_metrics(agent, container_flat["obs"])
+        if global_step_burnin is not None and iteration in args.log_iterations_img:
+            try:
+                compute_visitation_distribution(
+                    agent,
+                    container["obs"],
+                    D=512,
+                    nsteps=args.num_steps,
+                    nenvs=args.num_envs,
+                    env_id=args.env_id,
+                    ep_return=np.array(avg_returns).mean()
+                )
+            except:
+                print("Failed to compute visitation distribution")
+                pass
 
-        if global_step_burnin is not None and iteration % 10 == 0:
+        if global_step_burnin is not None and iteration in args.log_iterations:
+            with torch.no_grad():
+                max_len = min(4096, container_flat["obs"].shape[0])
+                container_flat = container_flat[:max_len]
+                metrics = compute_ppo_metrics(agent, container_flat["obs"])
+                try:
+                    ranks = compute_ranks_from_features(agent, container_flat["obs"])
+                except:
+                    ranks = {}
+
             cur_time = time.time()
             speed = (global_step - global_step_burnin) / (cur_time - start_time)
             global_step_burnin = global_step
@@ -291,16 +331,16 @@ if __name__ == "__main__":
                     "entropy": out["entropy_loss"].mean(),
                     "pg_loss": out["pg_loss"].mean(),
                     "v_loss": out["v_loss"].mean(),
-                    "approx_kl": out["approx_kl"],
-                    "clipfrac": out["clipfrac"],
+                    "approx_kl": np.mean(kls),
+                    "clipfrac": np.mean(clipfracs),
                     "hns": _compute_hns(args.env_id, ep_return),
                     "logprobs": container["logprobs"].mean(),
                     "advantages": container["advantages"].mean(),
                     "returns": container["returns"].mean(),
                     "vals": container["vals"].mean(),
-                    "gn": out["gn"].mean(),
+                    "gn": np.mean(gns),
                 }
-                logs = {**logs, **metrics}
+                logs = {**logs, **metrics, **ranks}
 
             lr = optimizer.param_groups[0]["lr"]
             pbar.set_description(
@@ -310,6 +350,7 @@ if __name__ == "__main__":
                 f"returns: {avg_returns_t: 4.2f},"
                 f"lr: {lr: 4.2f}"
             )
+            
             wandb.log(
                 {"global_step": global_step, "speed": speed, "episode_return": avg_returns_t, "r": r, "r_max": r_max, "lr": lr, **logs}, step=global_step
             )

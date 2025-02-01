@@ -110,7 +110,7 @@ class PQNAgent(nn.Module):
         }
         
         for layer, ns in neurons:
-            score = ns.flatten()
+            score = ns.mean(dim=0)
             mask = score <= 0.0
             total[layer] += torch.numel(mask)
             dead[layer] += (mask.sum().item())
@@ -163,14 +163,21 @@ class SharedTrunkPPOAgent(nn.Module):
             output_size=trunk_output_size,
             num_layers=trunk_num_layers,
             use_ln=use_ln,
-            last_act=True,
+            last_act=False,
             device=device
         )
         
-        self.actor = layer_init(nn.Linear(trunk_output_size, envs.single_action_space.n, device=device), std=0.01)
-        self.critic = layer_init(nn.Linear(trunk_output_size, 1, device=device), std=1)
+        self.actor = nn.Sequential(
+            nn.ReLU(),
+            layer_init(nn.Linear(trunk_output_size, envs.single_action_space.n, device=device), std=0.01)    
+        )
+        
+        self.critic = nn.Sequential(
+            nn.ReLU(),
+            layer_init(nn.Linear(trunk_output_size, 1, device=device), std=1)
+        )
 
-    def get_representation(self, x):
+    def get_representation(self, x, dead_neurons=False):
         x = x / 255.0
         neurons = []
         clss_to_hook = nn.Conv2d
@@ -197,7 +204,7 @@ class SharedTrunkPPOAgent(nn.Module):
         hidden = self.trunk(features)
         value = self.critic(hidden)
         return value
-
+    
     def get_action_and_value(self, obs, action=None):
         features = self.network(obs / 255.0)
         hidden = self.trunk(features)
@@ -218,7 +225,7 @@ class SharedTrunkPPOAgent(nn.Module):
         }
         
         for layer, ns in neurons:
-            score = ns.flatten()
+            score = ns.mean(dim=0)
             mask = score <= 0.0
             total[layer] += torch.numel(mask)
             dead[layer] += (mask.sum().item())

@@ -13,6 +13,11 @@ class PPOArgs:
     """if toggled, cuda will be enabled by default"""
     capture_video: bool = False
     """whether to capture videos of the agent performances (check out `videos` folder)"""
+    num_logs: int = 1000
+    """Number of logs to save."""
+    num_img_logs: int = 10
+    """Number of image logs to save."""
+    
 
     # Algorithm specific arguments
     env_id: str = "Breakout-v5"
@@ -56,7 +61,7 @@ class PPOArgs:
     """whether to use layer normalization"""
     cnn_type: str = "atari"
     """the type of the CNN"""
-    network_size: str = "small" # small, medium, large
+    network_size: str = "default" # small, medium, large, default
     """the size of the network"""
     shared_trunk: bool = True
     """whether to use a shared trunk agent"""
@@ -68,7 +73,7 @@ class PPOArgs:
     """the mini-batch size (computed in runtime)"""
     num_iterations: int = 0
     """the number of iterations (computed in runtime)"""
-    measure_burnin: int = 3
+    measure_burnin: int = 1
     """Number of burn-in iterations for speed measure."""
 
     compile: bool = True
@@ -89,6 +94,10 @@ class PQNArgs:
     """if toggled, cuda will be enabled by default"""
     capture_video: bool = False
     """whether to capture videos of the agent performances (check out `videos` folder)"""
+    num_logs: int = 1000
+    """Number of logs to save."""
+    num_img_logs: int = 10
+    """Number of image logs to save."""
 
     # Algorithm specific arguments
     env_id: str = "Breakout-v5"
@@ -113,7 +122,7 @@ class PQNArgs:
     """the maximum norm for the gradient clipping"""
     start_e: float = 1
     """the starting epsilon for exploration"""
-    end_e: float = 0.01
+    end_e: float = 0.005
     """the ending epsilon for exploration"""
     exploration_fraction: float = 0.10
     """the fraction of `total_timesteps` it takes from start_e to end_e"""
@@ -125,7 +134,7 @@ class PQNArgs:
     """whether to use layer normalization"""
     cnn_type: str = "atari"
     """the type of the CNN"""
-    network_size: str = "small" # small, medium, large
+    network_size: str = "default" # small, medium, large
     """the size of the network"""
 
     # to be filled in runtime
@@ -136,7 +145,7 @@ class PQNArgs:
     num_iterations: int = 0
     """the number of iterations (computed in runtime)"""
 
-    measure_burnin: int = 3
+    measure_burnin: int = 1
     """Number of burn-in iterations for speed measure."""
 
     compile: bool = True

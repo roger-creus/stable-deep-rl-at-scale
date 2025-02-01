@@ -11,18 +11,10 @@ RUN apt-get -y update && \
     ln -s /usr/bin/python3 /usr/bin/python && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
-RUN dpkg --add-architecture i386
-RUN apt-get update -y
-RUN apt-get install libc6-dbg -y
-RUN apt-get install libc6-dbg:i386 -y
-
 # install python dependencies0
 RUN pip install --upgrade --pre torch --index-url https://download.pytorch.org/whl/nightly/cu121
-COPY requirements/requirements-envpool.txt requirements.txt
-COPY requirements/requirements-atari.txt requirements-atari.txt
+COPY requirements.txt requirements.txt
 RUN pip install -r requirements.txt
-RUN pip install -r requirements-atari.txt
-RUN pip install gymnasium[other]
 RUN pip install wandb --user
 
 # Create useful directories

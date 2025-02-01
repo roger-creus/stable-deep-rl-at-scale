@@ -1,6 +1,6 @@
 gym<0.26
 envpool
-jax-jumpy==1.0.0 ; python_version >= "3.8" and python_version < "3.11"
+jax-jumpy==1.0.0
 matplotlib
 moviepy
 numpy<2.0
@@ -14,3 +14,7 @@ tqdm
 tyro
 wandb
 IPython
+scikit-learn
+opencv-contrib-python-headless
+umap-learn
+umap

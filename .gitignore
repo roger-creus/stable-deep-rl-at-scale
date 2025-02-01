@@ -5,5 +5,6 @@ all_commands.sh
 submit_job.sh
 run_config.json
 wandb/*
+plots/*
 *.sif
 *.pyc
