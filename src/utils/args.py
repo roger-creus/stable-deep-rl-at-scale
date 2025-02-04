@@ -13,11 +13,10 @@ class PPOArgs:
     """if toggled, cuda will be enabled by default"""
     capture_video: bool = False
     """whether to capture videos of the agent performances (check out `videos` folder)"""
-    num_logs: int = 1000
+    num_logs: int = 200
     """Number of logs to save."""
     num_img_logs: int = 10
     """Number of image logs to save."""
-    
 
     # Algorithm specific arguments
     env_id: str = "Breakout-v5"
@@ -136,6 +135,8 @@ class PQNArgs:
     """the type of the CNN"""
     network_size: str = "default" # small, medium, large
     """the size of the network"""
+    activation_fn: str = "relu"
+    """the activation function of the network"""
 
     # to be filled in runtime
     batch_size: int = 0

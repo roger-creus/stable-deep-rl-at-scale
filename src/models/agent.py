@@ -5,6 +5,7 @@ import torch.nn.functional as F
 from torch.distributions import Categorical
 from models.encoder import AtariCNN, ImpalaCNN, ConvSequence
 from models.mlp import MLP
+from utils.utils import get_act_fn_clss, find_all_modules
 
 def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
     torch.nn.init.orthogonal_(layer.weight, std)
@@ -15,28 +16,32 @@ class PQNAgent(nn.Module):
     def __init__(
         self,
         envs,
-        use_ln=False,
+        use_ln=True,
         cnn_type="atari",
         cnn_channels=[32, 64, 64],
         trunk_hidden_size=512,
         trunk_output_size=512,
         trunk_num_layers=1,
+        activation_fn="relu",
         device=None
     ):
         super().__init__()
         
         self.use_ln = use_ln
+        act_ = get_act_fn_clss(activation_fn)
         
         if cnn_type == "atari":
             self.network = AtariCNN(
                 cnn_channels=cnn_channels,
                 use_ln=use_ln,
+                activation_fn=activation_fn,
                 device=device
             )
         elif cnn_type == "impala":
             self.network = ImpalaCNN(
                 cnn_channels=cnn_channels,
                 use_ln=use_ln,
+                activation_fn=activation_fn,
                 device=device
             )
         else:
@@ -56,11 +61,12 @@ class PQNAgent(nn.Module):
             num_layers=trunk_num_layers,
             use_ln=use_ln,
             last_act=False,
+            activation_fn=activation_fn,
             device=device
         )
         
         self.q_func = nn.Sequential(
-            nn.ReLU(),
+            act_(),
             layer_init(nn.Linear(trunk_output_size, envs.single_action_space.n, device=device), std=0.01),
         )
 
@@ -120,6 +126,11 @@ class PQNAgent(nn.Module):
             "mlp" : dead["mlp"]/total["mlp"] * 100
         }
         return fraction_dead
+    
+    def adapt(self, td_errors, act_fn):
+        assert act_fn == "heuristic_adarl", f"Only heuristic ADARL is manually adaptable, not {act_fn}"
+        for module in find_all_modules(self, module_clss=get_act_fn_clss(act_fn)):
+            module.adapt(td_errors)
     
 class SharedTrunkPPOAgent(nn.Module):
     def __init__(

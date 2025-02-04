@@ -16,5 +16,5 @@ wandb
 IPython
 scikit-learn
 opencv-contrib-python-headless
-umap-learn
 umap
+umap-learn

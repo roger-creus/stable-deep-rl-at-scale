@@ -1,1 +1,1 @@
-# scaling-ppo
+# pqn-learning-dynamics

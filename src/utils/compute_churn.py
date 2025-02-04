@@ -3,9 +3,316 @@ import torch.nn.functional as F
 import matplotlib.pyplot as plt
 import wandb
 import umap
+import numpy as np
+from sklearn.decomposition import PCA
+from IPython import embed
+
+import warnings
+warnings.simplefilter(action='ignore', category=FutureWarning)
 
 @torch.no_grad()
-def compute_visitation_distribution(agent, obs, D=512, nsteps=32, nenvs=128, env_id="Breakout-v5", ep_return=0):
+def plot_representation_change(
+    agent,
+    old_agent,
+    obs,
+    prev_obs,
+    D=512,
+    global_step=0,
+    num_points=200,
+    name="learning_dynamics_change_per_iteration"
+):
+    # Unpack dimensions: (nsteps, nenvs, channels, height, width)
+    nsteps, nenvs, C, H, W = obs.shape
+
+    # Preallocate tensors for storing representations and value estimates.
+    # For current obs:
+    agent_obs_representations = torch.zeros((nenvs, nsteps, D), device=obs.device)
+    agent_obs_values = torch.zeros((nenvs, nsteps), device=obs.device)
+    old_agent_obs_representations = torch.zeros((nenvs, nsteps, D), device=obs.device)
+    old_agent_obs_values = torch.zeros((nenvs, nsteps), device=obs.device)
+    
+    # For previous obs:
+    agent_obs_prev_representations = torch.zeros((nenvs, nsteps, D), device=obs.device)
+    agent_obs_prev_values = torch.zeros((nenvs, nsteps), device=obs.device)
+    old_agent_obs_prev_representations = torch.zeros((nenvs, nsteps, D), device=obs.device)
+    old_agent_obs_prev_values = torch.zeros((nenvs, nsteps), device=obs.device)
+    
+    # Preallocate for optimal actions (for current observations)
+    agent_opt_actions = torch.zeros((nenvs, nsteps), dtype=torch.long, device=obs.device)
+    old_agent_opt_actions = torch.zeros((nenvs, nsteps), dtype=torch.long, device=obs.device)
+    
+    # Loop over each environment (or sequence) and compute representations, values, and optimal actions.
+    for i in range(nenvs):
+        # Get representations for current and previous observations.
+        agent_obs_representation_ = agent.get_representation(obs[:, i])
+        agent_obs_prev_representation_ = agent.get_representation(prev_obs[:, i])
+        old_agent_obs_representation_ = old_agent.get_representation(obs[:, i])
+        old_agent_obs_prev_representation_ = old_agent.get_representation(prev_obs[:, i])
+        
+        # If the output is a tuple, assume the first element is the representation.
+        if isinstance(agent_obs_representation_, tuple):
+            agent_obs_representation_ = agent_obs_representation_[0]
+            agent_obs_prev_representation_ = agent_obs_prev_representation_[0]
+            old_agent_obs_representation_ = old_agent_obs_representation_[0]
+            old_agent_obs_prev_representation_ = old_agent_obs_prev_representation_[0]
+        
+        # Store representations.
+        agent_obs_representations[i] = agent_obs_representation_
+        agent_obs_prev_representations[i] = agent_obs_prev_representation_
+        old_agent_obs_representations[i] = old_agent_obs_representation_
+        old_agent_obs_prev_representations[i] = old_agent_obs_prev_representation_
+        
+        # Try computing the value estimates and optimal actions.
+        try:
+            agent_obs_values[i] = agent.critic(agent_obs_representation_).squeeze(-1)
+            agent_obs_prev_values[i] = agent.critic(agent_obs_prev_representation_).squeeze(-1)
+            old_agent_obs_values[i] = old_agent.critic(old_agent_obs_representation_).squeeze(-1)
+            old_agent_obs_prev_values[i] = old_agent.critic(old_agent_obs_prev_representation_).squeeze(-1)
+            # For optimal actions, assume the critic might not provide them so we try q_func:
+            agent_q = agent.q_func(agent_obs_representation_)  # shape: (nsteps, n_actions)
+            old_agent_q = old_agent.q_func(old_agent_obs_representation_)
+        except Exception:
+            agent_obs_values[i] = agent.q_func(agent_obs_representation_).max(1).values.squeeze(-1)
+            agent_obs_prev_values[i] = agent.q_func(agent_obs_prev_representation_).max(1).values.squeeze(-1)
+            old_agent_obs_values[i] = old_agent.q_func(old_agent_obs_representation_).max(1).values.squeeze(-1)
+            old_agent_obs_prev_values[i] = old_agent.q_func(old_agent_obs_prev_representation_).max(1).values.squeeze(-1)
+            agent_q = agent.q_func(agent_obs_representation_)
+            old_agent_q = old_agent.q_func(old_agent_obs_representation_)
+        
+        # Determine optimal actions (argmax over Q-values) for current observations.
+        agent_opt_actions[i] = agent_q.argmax(dim=1)
+        old_agent_opt_actions[i] = old_agent_q.argmax(dim=1)
+    
+    # -------------------------------
+    # Process data for CURRENT observations (obs)
+    # -------------------------------
+    agent_current_repr = agent_obs_representations.view(-1, D).cpu().numpy()
+    old_current_repr = old_agent_obs_representations.view(-1, D).cpu().numpy()
+    agent_current_values = agent_obs_values.view(-1).cpu().numpy()
+    old_current_values = old_agent_obs_values.view(-1).cpu().numpy()
+    
+    # Optimal actions for current obs.
+    agent_opt_actions_np = agent_opt_actions.view(-1).cpu().numpy()
+    old_agent_opt_actions_np = old_agent_opt_actions.view(-1).cpu().numpy()
+    
+    # -- Quantitative Measures in the original embedding space --
+    # L2 distances:
+    l2_dists_current = np.linalg.norm(agent_current_repr - old_current_repr, axis=1)
+    # Cosine similarities & distances:
+    norm_agent = np.linalg.norm(agent_current_repr, axis=1)
+    norm_old = np.linalg.norm(old_current_repr, axis=1)
+    cos_sim_current = np.sum(agent_current_repr * old_current_repr, axis=1) / (norm_agent * norm_old + 1e-8)
+    cos_dists_current = 1 - cos_sim_current
+    
+    # print("Current Observations Embedding Differences:")
+    # print("  L2 distance: mean = {:.4f}, std = {:.4f}, max = {:.4f}".format(
+    #     l2_dists_current.mean(), l2_dists_current.std(), l2_dists_current.max()))
+    # print("  Cosine distance: mean = {:.4f}, std = {:.4f}, max = {:.4f}".format(
+    #     cos_dists_current.mean(), cos_dists_current.std(), cos_dists_current.max()))
+    # pct_opt_changed_current = 100 * np.mean(agent_opt_actions_np != old_agent_opt_actions_np)
+    # print("  Percentage of observations with changed optimal action: {:.2f}%".format(pct_opt_changed_current))
+    
+    # Fit PCA on the concatenated current representations.
+    pca_current = PCA(n_components=2)
+    combined_current = np.concatenate([agent_current_repr, old_current_repr], axis=0)
+    pca_current.fit(combined_current)
+    
+    # Transform the representations.
+    agent_current_pca = pca_current.transform(agent_current_repr)
+    old_current_pca = pca_current.transform(old_current_repr)
+    
+    # Compute distances between current representations (in PCA space).
+    delta_current = np.linalg.norm(agent_current_pca - old_current_pca, axis=1)
+    
+    # Scale marker sizes by change magnitude.
+    marker_sizes_current = 60 + 200 * (delta_current / (delta_current.max() + 1e-8))
+    
+    # Flag the largest 10% of changes.
+    large_change_current = delta_current >= np.percentile(delta_current, 90)
+    
+    # Flag where the optimal action has changed.
+    action_changed_current = agent_opt_actions_np != old_agent_opt_actions_np
+    
+    # Subsample if needed.
+    n_total = agent_current_pca.shape[0]
+    if n_total > num_points:
+        idx = np.random.choice(n_total, num_points, replace=False)
+        agent_current_pca = agent_current_pca[idx]
+        old_current_pca = old_current_pca[idx]
+        agent_current_values = agent_current_values[idx]
+        old_current_values = old_current_values[idx]
+        marker_sizes_current = marker_sizes_current[idx]
+        large_change_current = large_change_current[idx]
+        action_changed_current = action_changed_current[idx]
+        delta_current = delta_current[idx]
+        agent_opt_actions_np = agent_opt_actions_np[idx]
+        old_agent_opt_actions_np = old_agent_opt_actions_np[idx]
+    
+    # -------------------------------
+    # Process data for PREVIOUS observations (prev_obs)
+    # -------------------------------
+    agent_prev_repr = agent_obs_prev_representations.view(-1, D).cpu().numpy()
+    old_prev_repr = old_agent_obs_prev_representations.view(-1, D).cpu().numpy()
+    agent_prev_values = agent_obs_prev_values.view(-1).cpu().numpy()
+    old_prev_values = old_agent_obs_prev_values.view(-1).cpu().numpy()
+    
+    # For optimal actions on previous observations, we need to compute them.
+    try:
+        agent_prev_q = agent.q_func(agent_obs_prev_representations.view(-1, D))
+        old_agent_prev_q = old_agent.q_func(old_agent_obs_prev_representations.view(-1, D))
+    except Exception:
+        agent_prev_q = agent.critic(agent_obs_prev_representations.view(-1, D))
+        old_agent_prev_q = old_agent.critic(old_agent_obs_prev_representations.view(-1, D))
+    agent_opt_actions_prev = agent_prev_q.argmax(dim=1).cpu().numpy()
+    old_agent_opt_actions_prev = old_agent_prev_q.argmax(dim=1).cpu().numpy()
+    
+    l2_dists_prev = np.linalg.norm(agent_prev_repr - old_prev_repr, axis=1)
+    norm_agent_prev = np.linalg.norm(agent_prev_repr, axis=1)
+    norm_old_prev = np.linalg.norm(old_prev_repr, axis=1)
+    cos_sim_prev = np.sum(agent_prev_repr * old_prev_repr, axis=1) / (norm_agent_prev * norm_old_prev + 1e-8)
+    cos_dists_prev = 1 - cos_sim_prev
+    
+    # Fit PCA on the concatenated previous representations.
+    pca_prev = PCA(n_components=2)
+    combined_prev = np.concatenate([agent_prev_repr, old_prev_repr], axis=0)
+    pca_prev.fit(combined_prev)
+    
+    # Transform the representations.
+    agent_prev_pca = pca_prev.transform(agent_prev_repr)
+    old_prev_pca = pca_prev.transform(old_prev_repr)
+    
+    # Compute distances for previous observations.
+    delta_prev = np.linalg.norm(agent_prev_pca - old_prev_pca, axis=1)
+    
+    # Scale marker sizes.
+    marker_sizes_prev = 60 + 200 * (delta_prev / (delta_prev.max() + 1e-8))
+    
+    # Flag the largest 10% of changes.
+    large_change_prev = delta_prev >= np.percentile(delta_prev, 90)
+    
+    # Flag where the optimal action has changed.
+    action_changed_prev = agent_opt_actions_prev != old_agent_opt_actions_prev
+    
+    # Subsample previous observations if needed.
+    n_total_prev = agent_prev_pca.shape[0]
+    if n_total_prev > num_points:
+        idx_prev = np.random.choice(n_total_prev, num_points, replace=False)
+        agent_prev_pca = agent_prev_pca[idx_prev]
+        old_prev_pca = old_prev_pca[idx_prev]
+        agent_prev_values = agent_prev_values[idx_prev]
+        old_prev_values = old_prev_values[idx_prev]
+        marker_sizes_prev = marker_sizes_prev[idx_prev]
+        large_change_prev = large_change_prev[idx_prev]
+        action_changed_prev = action_changed_prev[idx_prev]
+        delta_prev = delta_prev[idx_prev]
+        agent_opt_actions_prev = agent_opt_actions_prev[idx_prev]
+        old_agent_opt_actions_prev = old_agent_opt_actions_prev[idx_prev]
+    
+    # -------------------------------
+    # Create a combined figure with 2 subplots (1 row, 2 columns)
+    # -------------------------------
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
+    
+    # --- Left subplot: CURRENT Observations ---
+    for a_pt, o_pt in zip(agent_current_pca, old_current_pca):
+        ax1.plot([o_pt[0], a_pt[0]], [o_pt[1], a_pt[1]], color='black', alpha=0.8, linewidth=1.25)
+    
+    sc1 = ax1.scatter(old_current_pca[:, 0], old_current_pca[:, 1],
+                      marker='x', c=old_current_values, cmap='viridis',
+                      label='Old Agent', s=marker_sizes_current)
+    
+    # Plot each current agent point individually so we can set custom edges.
+    for i in range(len(agent_current_pca)):
+        # Determine edge color.
+        if large_change_current[i] and action_changed_current[i]:
+            edge_color = 'purple'
+        elif large_change_current[i]:
+            edge_color = 'red'
+        elif action_changed_current[i]:
+            edge_color = 'black'
+        else:
+            edge_color = 'none'
+        
+        norm_val = (agent_current_values[i] - agent_current_values.min()) / (agent_current_values.ptp() + 1e-8)
+        face_color = plt.cm.viridis(norm_val)
+        ax1.scatter(agent_current_pca[i, 0], agent_current_pca[i, 1],
+                    marker='o',
+                    s=marker_sizes_current[i],
+                    facecolor=face_color,
+                    edgecolor=edge_color,
+                    linewidth=2,
+                    label='Agent' if i == 0 else "")
+    
+    ax1.set_title("Current Observations")
+    ax1.set_xlabel("PCA Dimension 1")
+    ax1.set_ylabel("PCA Dimension 2")
+    ax1.legend()
+    cbar1 = fig.colorbar(sc1, ax=ax1)
+    cbar1.set_label("Old Agent Value Estimate")
+    
+    # --- Right subplot: PREVIOUS Observations ---
+    for a_pt, o_pt in zip(agent_prev_pca, old_prev_pca):
+        ax2.plot([o_pt[0], a_pt[0]], [o_pt[1], a_pt[1]], color='black', alpha=0.8, linewidth=1.25)
+    
+    sc2 = ax2.scatter(old_prev_pca[:, 0], old_prev_pca[:, 1],
+                      marker='x', c=old_prev_values, cmap='viridis',
+                      label='Old Agent', s=marker_sizes_prev)
+    
+    # Plot each previous agent point individually with custom edges.
+    for i in range(len(agent_prev_pca)):
+        if large_change_prev[i] and action_changed_prev[i]:
+            edge_color = 'purple'
+        elif large_change_prev[i]:
+            edge_color = 'red'
+        elif action_changed_prev[i]:
+            edge_color = 'black'
+        else:
+            edge_color = 'none'
+        
+        norm_val = (agent_prev_values[i] - agent_prev_values.min()) / (agent_prev_values.ptp() + 1e-8)
+        face_color = plt.cm.viridis(norm_val)
+        ax2.scatter(agent_prev_pca[i, 0], agent_prev_pca[i, 1],
+                    marker='o',
+                    s=marker_sizes_prev[i],
+                    facecolor=face_color,
+                    edgecolor=edge_color,
+                    linewidth=2,
+                    label='Agent' if i == 0 else "")
+    
+    ax2.set_title("Previous Observations")
+    ax2.set_xlabel("PCA Dimension 1")
+    ax2.set_ylabel("PCA Dimension 2")
+    ax2.legend()
+    cbar2 = fig.colorbar(sc2, ax=ax2)
+    cbar2.set_label("Old Agent Value Estimate")
+    
+    plt.tight_layout()
+    wandb.log({f"{name}/representation_change": wandb.Image(fig)}, step=global_step)
+    wandb.log({
+        f"{name}/mean_l2_distance_current": l2_dists_current.mean(),
+        f"{name}/mean_cosine_distance_current": cos_dists_current.mean(),
+        f"{name}/var_l2_distance_current": l2_dists_current.var(),
+        f"{name}/var_cosine_distance_current": cos_dists_current.var(),
+        f"{name}/policy_churn_current": 100 * np.mean(agent_opt_actions_np != old_agent_opt_actions_np),
+        f"{name}/mean_l2_distance_prev": l2_dists_prev.mean(),
+        f"{name}/mean_cosine_distance_prev": cos_dists_prev.mean(),
+        f"{name}/var_l2_distance_prev": l2_dists_prev.var(),
+        f"{name}/var_cosine_distance_prev": cos_dists_prev.var(),
+        f"{name}/policy_churn_prev": 100 * np.mean(agent_opt_actions_prev != old_agent_opt_actions_prev),
+    }, step=global_step)
+
+    plt.close(fig)
+
+@torch.no_grad()
+def plot_visitation_distribution(
+    agent,
+    obs,
+    D=512,
+    nsteps=32,
+    nenvs=128,
+    env_id="Breakout-v5",
+    global_step=0,
+):
     nsteps, nenvs, C, H, W = obs.shape
     trajectories = torch.zeros((nenvs, nsteps, D), device=obs.device)
     values = torch.zeros((nenvs, nsteps), device=obs.device)
@@ -26,11 +333,13 @@ def compute_visitation_distribution(agent, obs, D=512, nsteps=32, nenvs=128, env
     sc = ax.scatter(trajectories_2d[:, 0], trajectories_2d[:, 1], c=values.flatten(), cmap='viridis')
     fig.colorbar(sc, ax=ax)
     
-    plt.title(f"{env_id} - NSteps: {nsteps} - NEnvs: {nenvs} - Ep. Return: {ep_return}")
+    plt.title(f"{env_id} - Visitation Distribution - Step {global_step}")
     plt.xlabel("UMAP Component 1")
     plt.ylabel("UMAP Component 2")
     plt.tight_layout()
-    wandb.log({"visitation_distribution": wandb.Image(fig)})
+    wandb.log({"learning_dynamics/visitation_distribution": wandb.Image(fig)}, step=global_step)
+    plt.close(fig)
+
     
 @torch.no_grad()
 def compute_representation_and_q_churn(agent, old_agent, obs):

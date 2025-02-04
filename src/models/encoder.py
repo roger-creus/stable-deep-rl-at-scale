@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
+from utils.utils import get_act_fn_clss, get_act_fn_functional
 
 def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
     torch.nn.init.orthogonal_(layer.weight, std)
@@ -13,6 +14,7 @@ class AtariCNN(nn.Module):
         self,
         cnn_channels,
         use_ln=False,
+        activation_fn="relu",
         device='cpu'
     ):
         super().__init__()
@@ -22,6 +24,7 @@ class AtariCNN(nn.Module):
         ln_sizes = [20, 9, 7]
         in_channels = 4
         input_size = 84
+        act_ = get_act_fn_clss(activation_fn)
         cnn = []
         for out_channel, kernel_size, stride, ln_size in zip(out_channels, kernel_sizes, strides, ln_sizes):
             # Add a convolutional layer
@@ -39,9 +42,9 @@ class AtariCNN(nn.Module):
                     )
                 )
                 
-            # Add a ReLU activation
+            # Add an activation
             cnn.append(
-                nn.ReLU()
+                act_()
             )
             
             output_size = (input_size - kernel_size) / stride + 1
@@ -66,10 +69,12 @@ class ResidualBlock(nn.Module):
         channels,
         input_shape,
         use_ln=False,
+        activation_fn="relu",
         device='cpu'
     ):
         super().__init__()
         self.use_ln = use_ln
+        self.act_ = get_act_fn_functional(activation_fn)
         
         self.conv0 = layer_init(nn.Conv2d(in_channels=channels, out_channels=channels, kernel_size=3, padding=1, device=device))
         if self.use_ln:
@@ -81,11 +86,11 @@ class ResidualBlock(nn.Module):
 
     def forward(self, x):
         inputs = x
-        x = nn.functional.relu(x)
+        x = self.act_(x)
         x = self.conv0(x)
         if self.use_ln:
             x = self.ln0(x)
-        x = nn.functional.relu(x)
+        x = self.act_(x)
         x = self.conv1(x)
         if self.use_ln:
             x = self.ln1(x)
@@ -98,6 +103,7 @@ class ConvSequence(nn.Module):
         input_shape,
         out_channels,
         use_ln=False,
+        activation_fn="relu",
         device='cpu'
     ):
         super().__init__()
@@ -110,8 +116,8 @@ class ConvSequence(nn.Module):
         if use_ln:
             self.ln = nn.LayerNorm([out_channels, input_shape[1], input_shape[2]], device=device)
 
-        self.res_block0 = ResidualBlock(self._out_channels, (self._input_shape[1] + 1) // 2, use_ln=use_ln, device=device)
-        self.res_block1 = ResidualBlock(self._out_channels, (self._input_shape[1] + 1) // 2, use_ln=use_ln, device=device)
+        self.res_block0 = ResidualBlock(self._out_channels, (self._input_shape[1] + 1) // 2, use_ln=use_ln, activation_fn=activation_fn, device=device)
+        self.res_block1 = ResidualBlock(self._out_channels, (self._input_shape[1] + 1) // 2, use_ln=use_ln, activation_fn=activation_fn, device=device)
 
     def forward(self, x):
         x = self.conv(x)
@@ -132,13 +138,20 @@ class ImpalaCNN(nn.Module):
         self,
         cnn_channels,
         use_ln=False,
+        activation_fn="relu",
         device='cpu'
     ):
         super().__init__()
         shape = (4, 84, 84)
         conv_seqs = []
         for out_channels in cnn_channels:
-            conv_seq = ConvSequence(shape, out_channels, use_ln=use_ln, device=device)
+            conv_seq = ConvSequence(
+                shape,
+                out_channels,
+                use_ln=use_ln,
+                activation_fn=activation_fn,
+                device=device
+            )
             shape = conv_seq.get_output_shape()
             conv_seqs.append(conv_seq)
         

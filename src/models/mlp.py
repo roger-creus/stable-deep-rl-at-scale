@@ -1,6 +1,7 @@
 import torch
 import numpy as np
 import torch.nn as nn
+from utils.utils import get_act_fn_clss
 
 def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
     torch.nn.init.orthogonal_(layer.weight, std)
@@ -16,10 +17,12 @@ class MLP(nn.Module):
         num_layers=1,
         last_act=True,
         use_ln=False,
+        activation_fn="relu",
         device='cpu'
     ):
         super(MLP, self).__init__()
         mlp = []
+        act_ = get_act_fn_clss(activation_fn)
         
         if num_layers == 1: hidden_size = output_size
         
@@ -49,7 +52,7 @@ class MLP(nn.Module):
                 
                 # Add a ReLU activation
                 mlp.append(
-                    nn.ReLU()
+                    act_()
                 )
             elif i == num_layers - 1:
                 if use_ln:
@@ -58,7 +61,7 @@ class MLP(nn.Module):
                     )
                 
                 if last_act:
-                    mlp.append(nn.ReLU())
+                    mlp.append(act_())
             
         self.net = nn.Sequential(*mlp)
         

@@ -1,10 +1,12 @@
 slurm_templates/*
 batch_jobs/*
-cluster_config.json
-all_commands.sh
-submit_job.sh
-run_config.json
 wandb/*
 plots/*
+
+cluster_config.json
+run_config.json
+xgenius_commands.sh
+submit_job.sh
+
 *.sif
 *.pyc

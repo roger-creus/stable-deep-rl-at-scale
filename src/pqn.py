@@ -27,11 +27,15 @@ Distribution.set_default_validate_args(False)
 torch.set_float32_matmul_precision("high")
 
 from utils.compute_hns import _compute_hns
-from utils.utils import parse_network_size
+from utils.utils import parse_network_size, find_all_modules, get_act_fn_clss
 from utils.args import PQNArgs
-from utils.compute_churn import compute_representation_and_q_churn, compute_ranks_from_features, compute_visitation_distribution
+from utils.compute_churn import compute_representation_and_q_churn, compute_ranks_from_features, plot_representation_change
 from utils.wrappers import RecordEpisodeStatistics
 from models.agent import PQNAgent
+from rl_act import plot_rlact, log_rlact_parameters
+
+from IPython import embed
+
 def linear_schedule(start_e: float, end_e: float, duration: int, t: int):
     slope = (end_e - start_e) / duration
     return max(slope * t + start_e, end_e)
@@ -129,7 +133,7 @@ if __name__ == "__main__":
     args.log_iterations_img = np.unique(args.log_iterations_img)
     args.log_iterations_img = np.insert(args.log_iterations_img, 0, 1)
     
-    run_name = f"PQN_CNN:{args.cnn_type}_SIZE:{args.network_size}_ENV:{args.env_id}_SEED:{args.seed}"
+    run_name = f"PQN_ENV:{args.env_id}_CNN:{args.cnn_type}_SIZE:{args.network_size}_LN:{args.use_ln}_ACTFN:{args.activation_fn}_SEED:{args.seed}"
     args.run_name = run_name
     
     random.seed(args.seed)
@@ -166,6 +170,7 @@ if __name__ == "__main__":
     agent_cfg = {
         "envs": envs,
         "use_ln": args.use_ln,
+        "activation_fn": args.activation_fn,
         "cnn_type": args.cnn_type,
         "cnn_channels": cnn_channels,
         "trunk_hidden_size": trunk_hidden_size,
@@ -202,6 +207,7 @@ if __name__ == "__main__":
         update = CudaGraphModule(update)
 
     ####### Training Loop #######
+    prev_container = None
     avg_returns = deque(maxlen=20)
     global_step = 0
     container_local = None
@@ -236,27 +242,36 @@ if __name__ == "__main__":
         old_agent.load_state_dict(agent.state_dict())
         for epoch in range(args.update_epochs):
             b_inds = torch.randperm(container_flat.shape[0], device=device).split(args.minibatch_size)
+            
             for b_idx, b in enumerate(b_inds):
                 container_local = container_flat[b]
-                out = update(container_local, tensordict_out=tensordict.TensorDict())
+                out = update(container_local, tensordict_out=tensordict.TensorDict())                   
                 gns.append(out["gn"].cpu().numpy())
 
                 # log images
-                if epoch == 0 and b_idx == 0 and global_step_burnin is not None and iteration in args.log_iterations_img:
+                if epoch == 0 and b_idx == 0 and global_step_burnin is not None and iteration in args.log_iterations_img and prev_container is not None:
+                    # RL_ACT plots
+                    if args.activation_fn in ["meta_adarl", "heuristic_adarl", "rl_act", "smooth_meta_adarl"]:
+                        _act_clss_fn = get_act_fn_clss(args.activation_fn)
+                        all_act_fns = find_all_modules(agent, _act_clss_fn)
+                        plot_rlact(all_act_fns, _act_clss_fn, ncols=2, global_step=global_step)
+                        
+                    # learning dynamics change per batch
                     try:
-                        compute_visitation_distribution(
+                        plot_representation_change(
                             agent,
+                            old_agent,
                             container["obs"],
-                            D=512,
-                            nsteps=args.num_steps,
-                            nenvs=args.num_envs,
-                            env_id=args.env_id,
-                            ep_return=np.array(avg_returns).mean()
+                            prev_container["obs"],
+                            D=trunk_hidden_size,
+                            global_step=global_step,
+                            num_points=300,
+                            name="learning_dynamics_change_per_batch",
                         )
-                    except:
-                        print("Failed to compute visitation distribution")
+                    except Exception as e:
+                        print(f"Failed to compute learning dynamics plot per batch: {e}")
                         pass
-                
+                        
                 # log churn stats
                 if epoch == 0 and b_idx == 0 and global_step_burnin is not None and iteration in args.log_iterations:
                     with torch.no_grad():
@@ -267,7 +282,31 @@ if __name__ == "__main__":
                             ranks = compute_ranks_from_features(agent, cntner_churn["obs"])
                         except:
                             ranks = {}
-               
+                            
+                    if args.activation_fn in ["meta_adarl", "heuristic_adarl", "rl_act"]:
+                        _act_clss_fn = get_act_fn_clss(args.activation_fn)
+                        all_act_fns = find_all_modules(agent, _act_clss_fn)
+                        log_rlact_parameters(all_act_fns, global_step)
+           
+        # log images                 
+        # learning dynamics change per iteration
+        if global_step_burnin is not None and iteration in args.log_iterations_img and prev_container is not None:
+            try:
+                plot_representation_change(
+                    agent,
+                    old_agent,
+                    container["obs"],
+                    prev_container["obs"],
+                    D=trunk_hidden_size,
+                    global_step=global_step,
+                    num_points=300,
+                    name="learning_dynamics_change_per_iteration",
+                )
+            except Exception as e:
+                print(f"Failed to compute learning dynamics plot per iteration: {e}")
+                pass
+        
+        # logging   
         if global_step_burnin is not None and iteration in args.log_iterations:
             cur_time = time.time()
             speed = (global_step - global_step_burnin) / (cur_time - start_time)
@@ -281,7 +320,7 @@ if __name__ == "__main__":
             )
         
             with torch.no_grad():
-                ep_return = np.array(avg_returns).mean()
+                ep_return = np.array(avg_returns).mean() if len(avg_returns) > 0 else 0
                 logs = {
                     "charts/sps": speed,
                     "charts/episode_return": ep_return,
@@ -299,5 +338,9 @@ if __name__ == "__main__":
             wandb.log(
                 {"charts/global_step": global_step, **logs}, step=global_step
             )
+
+        # keep old batch for plots
+        if iteration % 10 == 0:
+            prev_container = container
 
     envs.close()
