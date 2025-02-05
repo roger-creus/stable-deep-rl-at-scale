@@ -61,7 +61,11 @@ class PPOArgs:
     """whether to use layer normalization"""
     cnn_type: str = "atari"
     """the type of the CNN"""
-    network_size: str = "default" # small, medium, large
+    mlp_type: str = "default" #default,residual
+    """the type of the MLP"""
+    cnn_size: str = "medium" # small, medium, large
+    """the size of the network"""
+    mlp_size: str = "medium" # small, medium, large
     """the size of the network"""
     activation_fn: str = "relu"
     """the activation function of the network"""

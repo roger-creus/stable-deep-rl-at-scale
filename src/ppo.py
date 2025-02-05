@@ -26,13 +26,14 @@ Distribution.set_default_validate_args(False)
 torch.set_float32_matmul_precision("high")
 
 from utils.compute_hns import _compute_hns
-from utils.utils import parse_network_size, find_all_modules, get_act_fn_clss
+from utils.utils import parse_cnn_size, parse_mlp_size, find_all_modules, get_act_fn_clss
 from utils.args import PPOArgs
 from utils.wrappers import RecordEpisodeStatistics
 from utils.compute_churn import compute_ppo_metrics, compute_ranks_from_features, plot_representation_change
 from utils.wrappers import RecordEpisodeStatistics
 from models.agent import SharedTrunkPPOAgent, DecoupledPPOAgent
 from rl_act import plot_rlact, log_rlact_parameters
+
 from IPython import embed
 
 def gae(next_obs, next_done, container):
@@ -58,7 +59,6 @@ def gae(next_obs, next_done, container):
     advantages = container["advantages"] = torch.stack(list(reversed(advantages)))
     container["returns"] = advantages + vals
     return container
-
 
 def rollout(obs, done, avg_returns=[], avg_lengths=[]):
     ts = []
@@ -135,21 +135,40 @@ def update(obs, actions, logprobs, advantages, returns, vals):
     loss = pg_loss - args.ent_coef * entropy_loss + v_loss * args.vf_coef
 
     loss.backward()
+    
+    # log gradient norms per layer
+    layer_grad_norms = {}
+    for name, param in agent.named_parameters():
+        if param.grad is not None and "weight" in name:
+            layer_grad_norms[name] = param.grad.detach().norm(2)
+
+    # keep only even indices to discard layer norm
+    clean_grad_norms = {k: v for i, (k, v) in enumerate(layer_grad_norms.items()) if i % 2 == 0}
+    clean_grad_norms = {k.replace("network.", "").replace(".weight", "").replace(".", "_"): v for k, v in clean_grad_norms.items()}
+    clean_grad_norms = {f"{k.split('_')[0]}_{i}": v for i, (k, v) in enumerate(clean_grad_norms.items())}
+    c = 0
+    for k,v in clean_grad_norms.items():
+        if "trunk" in k:
+            clean_grad_norms[f"mlp_{c}"] = v
+            del clean_grad_norms[k]
+            c += 1
+    
     gn = nn.utils.clip_grad_norm_(agent.parameters(), args.max_grad_norm)
     optimizer.step()
 
-    return approx_kl, v_loss.detach(), pg_loss.detach(), entropy_loss.detach(), old_approx_kl, clipfrac, gn
-
+    return approx_kl, v_loss.detach(), pg_loss.detach(), entropy_loss.detach(), old_approx_kl, clipfrac, gn, clean_grad_norms
 
 update = tensordict.nn.TensorDictModule(
     update,
     in_keys=["obs", "actions", "logprobs", "advantages", "returns", "vals"],
-    out_keys=["approx_kl", "v_loss", "pg_loss", "entropy_loss", "old_approx_kl", "clipfrac", "gn"],
+    out_keys=["approx_kl", "v_loss", "pg_loss", "entropy_loss", "old_approx_kl", "clipfrac", "gn", "clean_grad_norms"],
 )
 
 if __name__ == "__main__":
     ####### Argument Parsing #######
     args = tyro.cli(PPOArgs)
+    assert not (args.mlp_type == "residual" and args.mlp_size == "small"), "Residual MLP with small size is not supported"
+    
     batch_size = int(args.num_envs * args.num_steps)
     args.minibatch_size = batch_size // args.num_minibatches
     args.batch_size = args.num_minibatches * args.minibatch_size
@@ -162,7 +181,7 @@ if __name__ == "__main__":
     args.log_iterations_img = np.unique(args.log_iterations_img)
     args.log_iterations_img = np.insert(args.log_iterations_img, 0, 1)
     
-    run_name = f"PPO_ENV:{args.env_id}_CNN:{args.cnn_type}_SIZE:{args.network_size}_LN:{args.use_ln}_ACTFN:{args.activation_fn}_SEED:{args.seed}"
+    run_name = f"PPO_ENV:{args.env_id}_CNN:{args.cnn_type}_CNNSIZE:{args.cnn_size}_MLP:{args.mlp_type}_MLPSIZE:{args.mlp_size}_LN:{args.use_ln}_ACTFN:{args.activation_fn}_SEED:{args.seed}"
     args.run_name = run_name
 
     random.seed(args.seed)
@@ -195,13 +214,15 @@ if __name__ == "__main__":
     assert isinstance(envs.action_space, gym.spaces.Discrete), "only discrete action space is supported"
 
     ####### Agent #######
-    cnn_channels, trunk_hidden_size, trunk_num_layers = parse_network_size(args.network_size)
+    cnn_channels = parse_cnn_size(args.cnn_size)
+    trunk_hidden_size, trunk_num_layers = parse_mlp_size(args.mlp_size)
     agent_cfg = {
         "envs": envs,
         "use_ln": args.use_ln,
         "activation_fn": args.activation_fn,
         "cnn_type": args.cnn_type,
         "cnn_channels": cnn_channels,
+        "mlp_type": args.mlp_type,
         "trunk_hidden_size": trunk_hidden_size,
         "trunk_num_layers": trunk_num_layers,
         "device": device,
@@ -262,10 +283,12 @@ if __name__ == "__main__":
             lrnow = frac * args.learning_rate
             optimizer.param_groups[0]["lr"].copy_(lrnow)
 
+        # collect rollout
         torch.compiler.cudagraph_mark_step_begin()
         next_obs, next_done, container = rollout(next_obs, next_done, avg_returns=avg_returns, avg_lengths=avg_lengths)
         global_step += container.numel()
 
+        # compute gae
         container = gae(next_obs, next_done, container)
         container_flat = container.view(-1)
 
@@ -295,20 +318,20 @@ if __name__ == "__main__":
                         plot_rlact(all_act_fns, _act_clss_fn, ncols=2, global_step=global_step)
                         
                     # learning dynamics change per batch
-                    try:
-                        plot_representation_change(
-                            agent,
-                            old_agent,
-                            container["obs"],
-                            prev_container["obs"],
-                            D=trunk_hidden_size,
-                            global_step=global_step,
-                            num_points=300,
-                            name="learning_dynamics_change_per_batch",
-                        )
-                    except Exception as e:
-                        print(f"Failed to compute learning dynamics plot per batch: {e}")
-                        pass
+                    # try:
+                    #    plot_representation_change(
+                    #        agent,
+                    #        old_agent,
+                    #        container["obs"],
+                    #        prev_container["obs"],
+                    #        D=trunk_hidden_size,
+                    #        global_step=global_step,
+                    #        num_points=300,
+                    #        name="learning_dynamics_change_per_batch",
+                    #    )
+                    # except Exception as e:
+                    #    print(f"Failed to compute learning dynamics plot per batch: {e}")
+                    #    pass
                     
                 # log churn stats
                 if epoch == 0 and b_idx == 0 and global_step_burnin is not None and iteration in args.log_iterations:
@@ -316,12 +339,15 @@ if __name__ == "__main__":
                         max_to_keep = min(4096, len(container_flat))
                         cntner_churn = container_flat[torch.randperm(len(container_flat))[:max_to_keep]]
                         metrics = compute_ppo_metrics(agent, container_flat["obs"])
+                        per_layer_grad_norms = {
+                            f"gradient_norms/{k}": v.item() for k, v in out["clean_grad_norms"].items()
+                        }
                         try:
                             ranks = compute_ranks_from_features(agent, container_flat["obs"])
                         except:
                             ranks = {}
                             
-                    if args.activation_fn in ["meta_adarl", "heuristic_adarl", "rl_act"]:
+                    if args.activation_fn in ["meta_adarl", "heuristic_adarl", "rl_act", "smooth_meta_adarl"]:
                         _act_clss_fn = get_act_fn_clss(args.activation_fn)
                         all_act_fns = find_all_modules(agent, _act_clss_fn)
                         log_rlact_parameters(all_act_fns, global_step)
@@ -329,20 +355,15 @@ if __name__ == "__main__":
         # log images                 
         # learning dynamics change per iteration
         if global_step_burnin is not None and iteration in args.log_iterations_img and prev_container is not None:
-            try:
-                plot_representation_change(
-                    agent,
-                    old_agent,
-                    container["obs"],
-                    prev_container["obs"],
-                    D=trunk_hidden_size,
-                    global_step=global_step,
-                    num_points=300,
-                    name="learning_dynamics_change_per_iteration",
-                )
-            except Exception as e:
-                print(f"Failed to compute learning dynamics plot per iteration: {e}")
-                pass
+            plot_representation_change(
+                agent,
+                old_agent,
+                container["obs"],
+                prev_container["obs"],
+                global_step=global_step,
+                num_points=300,
+                name="learning_dynamics_change_per_iteration",
+            )
 
         if global_step_burnin is not None and iteration in args.log_iterations:
             cur_time = time.time()
@@ -381,7 +402,7 @@ if __name__ == "__main__":
                     "losses/gradient_norm": np.mean(gns),
                     "schedule/lr": optimizer.param_groups[0]["lr"],
                 }
-                logs = {**logs, **metrics, **ranks}
+                logs = {**logs, **metrics, **ranks, **per_layer_grad_norms}
 
             wandb.log(
                 {"charts/global_step": global_step, **logs}, step=global_step

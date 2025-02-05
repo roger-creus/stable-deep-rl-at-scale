@@ -77,10 +77,11 @@ def plot_representation_change(
         # Try computing the value estimates and optimal actions.
         try:
             pqn=False
-            agent_obs_values[i] = agent.critic(agent_obs_representation_).squeeze(-1)
-            agent_obs_prev_values[i] = agent.critic(agent_obs_prev_representation_).squeeze(-1)
-            old_agent_obs_values[i] = old_agent.critic(old_agent_obs_representation_).squeeze(-1)
-            old_agent_obs_prev_values[i] = old_agent.critic(old_agent_obs_prev_representation_).squeeze(-1)
+            last_layer = list(agent_obs_representation_.keys())[-1]
+            agent_obs_values[i] = agent.critic(agent_obs_representation_[last_layer]).squeeze(-1)
+            agent_obs_prev_values[i] = agent.critic(agent_obs_prev_representation_[last_layer]).squeeze(-1)
+            old_agent_obs_values[i] = old_agent.critic(old_agent_obs_representation_[last_layer]).squeeze(-1)
+            old_agent_obs_prev_values[i] = old_agent.critic(old_agent_obs_prev_representation_[last_layer]).squeeze(-1)
         except Exception:
             pqn=True
             last_layer = list(agent_obs_representation_.keys())[-1]
@@ -174,14 +175,16 @@ def plot_representation_change(
             marker_sizes[k] = marker_sizes[k][idx]
             large_change_flags[k] = large_change_flags[k][idx]
             delta_current_all[k] = delta_current_all[k][idx]
-            action_changed_flags[k] = action_changed_flags[k][idx]
+            if pqn:
+                action_changed_flags[k] = action_changed_flags[k][idx]
+        
+        agent_current_values = agent_current_values[idx]
+        old_current_values = old_current_values[idx]
         
         if pqn:
             agent_opt_actions_np = agent_opt_actions_np[idx]
             old_agent_opt_actions_np = old_agent_opt_actions_np[idx]
-            agent_current_values = agent_current_values[idx]
-            old_current_values = old_current_values[idx]
-    
+        
     # -------------------------------
     # Process data for PREVIOUS observations (prev_obs)
     # -------------------------------
@@ -204,8 +207,10 @@ def plot_representation_change(
         agent_opt_actions_prev = agent_prev_q.argmax(dim=1).cpu().numpy()
         old_agent_opt_actions_prev = old_agent_prev_q.argmax(dim=1).cpu().numpy()
     else:
-        agent_prev_q = agent.critic(agent_obs_prev_representations.view(-1, D))
-        old_agent_prev_q = old_agent.critic(old_agent_obs_prev_representations.view(-1, D))
+        last_layer = list(agent_obs_prev_representation_.keys())[-1]
+        last_shape = agent_obs_prev_representation_[last_layer].shape[-1]
+        agent_prev_q = agent.critic(agent_obs_prev_representations[last_layer].view(-1, last_shape))
+        old_agent_prev_q = old_agent.critic(old_agent_obs_prev_representations[last_layer].view(-1, last_shape))
     
     l2_dists_prev = {}
     for k in agent_prev_repr.keys():
@@ -253,13 +258,17 @@ def plot_representation_change(
             marker_sizes_prev[k] = marker_sizes_prev[k][idx]
             large_change_flags_prev[k] = large_change_flags_prev[k][idx]
             delta_prev_all[k] = delta_prev_all[k][idx]
-            action_changed_flags_prev[k] = action_changed_flags_prev[k][idx]
+            
+            if pqn:
+                action_changed_flags_prev[k] = action_changed_flags_prev[k][idx]
+        
+        agent_prev_values = agent_prev_values[idx]
+        old_prev_values = old_prev_values[idx]
         
         if pqn:
             agent_opt_actions_prev = agent_opt_actions_prev[idx]
             old_agent_opt_actions_prev = old_agent_opt_actions_prev[idx]
-            agent_prev_values = agent_prev_values[idx]
-            old_prev_values = old_prev_values[idx]
+            
     
     # Loop over each representation key and create a plot.
     for k in agent_current_repr.keys():

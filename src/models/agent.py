@@ -7,6 +7,7 @@ from models.encoder import AtariCNN, ImpalaCNN, ConvSequence
 from models.mlp import MLP, ResidualMLP, ResidualBlock
 from models.transformer import Transformer
 from utils.utils import get_act_fn_clss, find_all_modules
+from IPython import embed
 
 def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
     torch.nn.init.orthogonal_(layer.weight, std)
@@ -124,19 +125,26 @@ class PQNAgent(nn.Module):
     
     def get_layer_shapes(self):
         layer_shapes = {}
+        dummy_input = torch.rand(1, 4, 84, 84).to(next(self.parameters()).device)
+        x = dummy_input
         count = 0
-        
         clss_to_hook = nn.LayerNorm if self.use_ln else nn.Conv2d
+
         for module in self.network.cnn.children():
+            with torch.no_grad():
+                x = module(x)
+                
             if isinstance(module, clss_to_hook) or isinstance(module, ConvSequence):
-                if clss_to_hook == nn.LayerNorm:
+                if self.use_ln:
                     layer_shapes[f'cnn_{count}'] = module.normalized_shape
                 else:
-                    layer_shapes[f'cnn_{count}'] = module.output_shape
+                    layer_shapes[f'cnn_{count}'] = x.shape
                 count += 1
-                
-        clss_to_hook = nn.LayerNorm if self.use_ln else nn.Linear
+
+        x = x.view(x.size(0), -1)
+
         count = 0
+        clss_to_hook = nn.LayerNorm if self.use_ln else nn.Linear
         for module in self.trunk.net.children():
             if isinstance(module, clss_to_hook) or isinstance(module, ResidualBlock):
                 if isinstance(module, ResidualBlock):
@@ -145,22 +153,16 @@ class PQNAgent(nn.Module):
                             if clss_to_hook == nn.LayerNorm:
                                 layer_shapes[f'mlp_{count}'] = sub_module.normalized_shape
                             else:
-                                layer_shapes[f'mlp_{count}'] = sub_module.output_shape
+                                layer_shapes[f'mlp_{count}'] = sub_module.weight.shape[0]
                             count += 1
                 else:
                     if clss_to_hook == nn.LayerNorm:
                         layer_shapes[f'mlp_{count}'] = module.normalized_shape
                     else:
-                        layer_shapes[f'mlp_{count}'] = module.output_shape
+                        layer_shapes[f'mlp_{count}'] = module.weight.shape[0]
                     count += 1
                     
         return layer_shapes
-
-    def get_Q(self, hidden):
-        return self.q_func(hidden)
-        
-    def get_max_value(self, x):
-        return self.forward(x).max(1)[0]
     
     def calculate_dead_neurons(self, neurons):
         total = {
@@ -184,12 +186,12 @@ class PQNAgent(nn.Module):
             "mlp" : dead["mlp"]/total["mlp"] * 100
         }
         return fraction_dead
-    
-    def adapt(self, td_errors, act_fn):
-        assert act_fn == "heuristic_adarl", f"Only heuristic ADARL is manually adaptable, not {act_fn}"
-        for module in find_all_modules(self, module_clss=get_act_fn_clss(act_fn)):
-            module.adapt(td_errors)
-    
+
+    def get_Q(self, hidden):
+        return self.q_func(hidden)
+        
+    def get_max_value(self, x):
+        return self.forward(x).max(1)[0]
     
 ######################################## PPO Agents ########################################
 class SharedTrunkPPOAgent(nn.Module):
@@ -199,6 +201,7 @@ class SharedTrunkPPOAgent(nn.Module):
         use_ln=False,
         activation_fn="relu",
         cnn_type="atari",
+        mlp_type="default",
         cnn_channels=[32, 64, 64],
         trunk_hidden_size=512,
         trunk_output_size=512,
@@ -206,7 +209,9 @@ class SharedTrunkPPOAgent(nn.Module):
         device=None
     ):
         super().__init__()
+        self.use_ln = use_ln
         act_ = get_act_fn_clss(activation_fn)
+        mlp_clss = ResidualMLP if mlp_type == "residual" else MLP
         
         if cnn_type == "atari":
             self.network = AtariCNN(
@@ -232,7 +237,7 @@ class SharedTrunkPPOAgent(nn.Module):
             dummy = self.network(dummy_torch)
             dummy_shape = dummy.view(dummy.size(0), -1).shape[1]
             
-        self.trunk = MLP(
+        self.trunk = mlp_clss(
             input_size=dummy_shape,
             hidden_size=trunk_hidden_size,
             output_size=trunk_output_size,
@@ -253,27 +258,48 @@ class SharedTrunkPPOAgent(nn.Module):
             layer_init(nn.Linear(trunk_output_size, 1, device=device), std=1)
         )
 
-    def get_representation(self, x, dead_neurons=False):
+    def get_representation(self, x, dead_neurons=False, per_layer=False):
         x = x / 255.0
         neurons = []
-        clss_to_hook = nn.Conv2d
+        count = 0
+        clss_to_hook = nn.LayerNorm if self.use_ln else nn.Conv2d
         for module in self.network.cnn.children():
             x = module(x)
-            if (isinstance(module, clss_to_hook) or isinstance(module, ConvSequence)):
+            if (dead_neurons or per_layer) and (isinstance(module, clss_to_hook) or isinstance(module, ConvSequence)):
                 neurons.append(
-                    ('cnn', F.relu(x.clone()).detach())
+                    (f'cnn_{count}', F.relu(x.clone()).detach())
                 )
+                count += 1
                 
-        clss_to_hook = nn.Linear
+        count = 0
+        clss_to_hook = nn.LayerNorm if self.use_ln else nn.Linear
         for module in self.trunk.net.children():
             x = module(x)
-            if isinstance(module, clss_to_hook):
-                neurons.append(
-                    ('mlp', F.relu(x.clone()).detach())
-                )
-                
-        dead_neurons = self.calculate_dead_neurons(neurons)
-        return x, dead_neurons
+            if (dead_neurons or per_layer) and isinstance(module, clss_to_hook) or isinstance(module, ResidualBlock):
+                if isinstance(module, ResidualBlock):
+                    for sub_module in module.children():
+                        if isinstance(sub_module, clss_to_hook):
+                            neurons.append(
+                                (f'mlp_{count}', F.relu(x.clone()).detach())
+                            )
+                            count += 1
+                else: 
+                    neurons.append(
+                        (f'mlp_{count}', F.relu(x.clone()).detach())
+                    )
+                    count += 1
+
+        if per_layer:
+            neurons_dict = {}
+            for layer, ns in neurons:
+                neurons_dict[layer] = ns
+            return x, neurons_dict
+
+        if dead_neurons:
+            dead_neurons = self.calculate_dead_neurons(neurons)
+            return x, dead_neurons
+        
+        return x
             
     def get_value(self, x):
         features = self.network(x / 255.0)
@@ -303,15 +329,57 @@ class SharedTrunkPPOAgent(nn.Module):
         for layer, ns in neurons:
             score = ns.mean(dim=0)
             mask = score <= 0.0
-            total[layer] += torch.numel(mask)
-            dead[layer] += (mask.sum().item())
+            layer_name = layer.split("_")[0]
+            total[layer_name] += torch.numel(mask)
+            dead[layer_name] += (mask.sum().item())
         
         fraction_dead = {
             "cnn" : dead["cnn"]/total["cnn"] * 100,
             "mlp" : dead["mlp"]/total["mlp"] * 100
         }
         return fraction_dead
+    
+    def get_layer_shapes(self):
+        layer_shapes = {}
+        dummy_input = torch.rand(1, 4, 84, 84).to(next(self.parameters()).device)
+        x = dummy_input
+        count = 0
+        clss_to_hook = nn.LayerNorm if self.use_ln else nn.Conv2d
 
+        for module in self.network.cnn.children():
+            with torch.no_grad():
+                x = module(x)
+                
+            if isinstance(module, clss_to_hook) or isinstance(module, ConvSequence):
+                if self.use_ln:
+                    layer_shapes[f'cnn_{count}'] = module.normalized_shape
+                else:
+                    layer_shapes[f'cnn_{count}'] = x.shape
+                count += 1
+
+        x = x.view(x.size(0), -1)
+
+        count = 0
+        clss_to_hook = nn.LayerNorm if self.use_ln else nn.Linear
+        for module in self.trunk.net.children():
+            if isinstance(module, clss_to_hook) or isinstance(module, ResidualBlock):
+                if isinstance(module, ResidualBlock):
+                    for sub_module in module.children():
+                        if isinstance(sub_module, clss_to_hook):
+                            if clss_to_hook == nn.LayerNorm:
+                                layer_shapes[f'mlp_{count}'] = sub_module.normalized_shape
+                            else:
+                                layer_shapes[f'mlp_{count}'] = sub_module.weight.shape[0]
+                            count += 1
+                else:
+                    if clss_to_hook == nn.LayerNorm:
+                        layer_shapes[f'mlp_{count}'] = module.normalized_shape
+                    else:
+                        layer_shapes[f'mlp_{count}'] = module.weight.shape[0]
+                    count += 1
+                    
+        return layer_shapes
+    
 
 class DecoupledPPOAgent(nn.Module):
     def __init__(

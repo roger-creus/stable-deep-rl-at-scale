@@ -40,7 +40,6 @@ def linear_schedule(start_e: float, end_e: float, duration: int, t: int):
     slope = (end_e - start_e) / duration
     return max(slope * t + start_e, end_e)
 
-
 def lambda_returns(next_obs, next_done, container):
     nextnonterminals = (~container["dones"]).float().unbind(0)
     vals = container["vals"]
@@ -127,7 +126,6 @@ def update(obs, actions, returns):
             clean_grad_norms[f"mlp_{c}"] = v
             del clean_grad_norms[k]
             c += 1
-            
             
     gn = nn.utils.clip_grad_norm_(agent.parameters(), args.max_grad_norm)
     optimizer.step()
@@ -315,7 +313,7 @@ if __name__ == "__main__":
                         except:
                             ranks = {}
                             
-                    if args.activation_fn in ["meta_adarl", "heuristic_adarl", "rl_act"]:
+                    if args.activation_fn in ["meta_adarl", "heuristic_adarl", "rl_act", "smooth_meta_adarl"]:
                         _act_clss_fn = get_act_fn_clss(args.activation_fn)
                         all_act_fns = find_all_modules(agent, _act_clss_fn)
                         log_rlact_parameters(all_act_fns, global_step)
@@ -323,15 +321,19 @@ if __name__ == "__main__":
         # log images                 
         # learning dynamics change per iteration
         if global_step_burnin is not None and iteration in args.log_iterations_img and prev_container is not None:
-            plot_representation_change(
-                agent,
-                old_agent,
-                container["obs"],
-                prev_container["obs"],
-                global_step=global_step,
-                num_points=300,
-                name="learning_dynamics_change_per_iteration",
-            )
+            try:
+                plot_representation_change(
+                    agent,
+                    old_agent,
+                    container["obs"],
+                    prev_container["obs"],
+                    global_step=global_step,
+                    num_points=300,
+                    name="learning_dynamics_change_per_iteration",
+                )
+            except Exception as e:
+                print(f"Failed to compute learning dynamics plot per iteration: {e}")
+                pass
         
         # logging   
         if global_step_burnin is not None and iteration in args.log_iterations:
