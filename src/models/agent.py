@@ -4,7 +4,7 @@ import numpy as np
 import torch.nn.functional as F
 from torch.distributions import Categorical
 from models.encoder import AtariCNN, ImpalaCNN, ConvSequence
-from models.mlp import MLP
+from models.mlp import MLP, ResidualMLP, ResidualBlock
 from models.transformer import Transformer
 from utils.utils import get_act_fn_clss, find_all_modules
 
@@ -21,6 +21,7 @@ class PQNAgent(nn.Module):
         envs,
         use_ln=True,
         cnn_type="atari",
+        mlp_type="default",
         cnn_channels=[32, 64, 64],
         trunk_hidden_size=512,
         trunk_output_size=512,
@@ -32,6 +33,7 @@ class PQNAgent(nn.Module):
         
         self.use_ln = use_ln
         act_ = get_act_fn_clss(activation_fn)
+        mlp_clss = ResidualMLP if mlp_type == "residual" else MLP
         
         if cnn_type == "atari":
             self.network = AtariCNN(
@@ -57,7 +59,7 @@ class PQNAgent(nn.Module):
             dummy = self.network(dummy_torch)
             dummy_shape = dummy.view(dummy.size(0), -1).shape[1]
             
-        self.trunk = MLP(
+        self.trunk = mlp_clss(
             input_size=dummy_shape,
             hidden_size=trunk_hidden_size, # will not be used if num_layers=1
             output_size=trunk_output_size,
@@ -94,11 +96,19 @@ class PQNAgent(nn.Module):
         clss_to_hook = nn.LayerNorm if self.use_ln else nn.Linear
         for module in self.trunk.net.children():
             x = module(x)
-            if (dead_neurons or per_layer) and isinstance(module, clss_to_hook):
-                neurons.append(
-                    (f'mlp_{count}', F.relu(x.clone()).detach())
-                )
-                count += 1
+            if (dead_neurons or per_layer) and isinstance(module, clss_to_hook) or isinstance(module, ResidualBlock):
+                if isinstance(module, ResidualBlock):
+                    for sub_module in module.children():
+                        if isinstance(sub_module, clss_to_hook):
+                            neurons.append(
+                                (f'mlp_{count}', F.relu(x.clone()).detach())
+                            )
+                            count += 1
+                else: 
+                    neurons.append(
+                        (f'mlp_{count}', F.relu(x.clone()).detach())
+                    )
+                    count += 1
 
         if per_layer:
             neurons_dict = {}
@@ -128,12 +138,21 @@ class PQNAgent(nn.Module):
         clss_to_hook = nn.LayerNorm if self.use_ln else nn.Linear
         count = 0
         for module in self.trunk.net.children():
-            if isinstance(module, clss_to_hook):
-                if clss_to_hook == nn.LayerNorm:
-                    layer_shapes[f'mlp_{count}'] = module.normalized_shape
+            if isinstance(module, clss_to_hook) or isinstance(module, ResidualBlock):
+                if isinstance(module, ResidualBlock):
+                    for sub_module in module.children():
+                        if isinstance(sub_module, clss_to_hook):
+                            if clss_to_hook == nn.LayerNorm:
+                                layer_shapes[f'mlp_{count}'] = sub_module.normalized_shape
+                            else:
+                                layer_shapes[f'mlp_{count}'] = sub_module.output_shape
+                            count += 1
                 else:
-                    layer_shapes[f'mlp_{count}'] = module.output_shape
-                count += 1
+                    if clss_to_hook == nn.LayerNorm:
+                        layer_shapes[f'mlp_{count}'] = module.normalized_shape
+                    else:
+                        layer_shapes[f'mlp_{count}'] = module.output_shape
+                    count += 1
                     
         return layer_shapes
 

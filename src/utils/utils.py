@@ -3,16 +3,25 @@ import torch
 import torch.nn.functional as F
 from rl_act import RLAct, Meta_ADARL, Heuristic_ADARL, Smooth_Meta_ADARL
 
-def parse_network_size(net_size):
-    if net_size not in ["small", "medium", "large", "default"]: raise ValueError(f"Unknown network size: {net_size}")
+def parse_cnn_size(net_size):
+    if net_size not in ["small", "medium", "large"]:
+        raise ValueError(f"Unknown network size: {net_size}")
     if net_size == "small":
-        return (16, 32, 32), 512, 1
+        return (16, 32, 32)
     elif net_size == "medium":
-        return (32, 64, 64), 1024, 2
+        return (32, 64, 64)
     elif net_size == "large":
-        return (64, 128, 128), 2048, 3
-    elif net_size == "default":
-        return (32, 64, 64), 512, 1
+        return (64, 128, 128)
+    
+def parse_mlp_size(net_size):
+    if net_size not in ["small", "medium", "large"]:
+        raise ValueError(f"Unknown network size: {net_size}")
+    if net_size == "small":
+        return (512, 1)
+    elif net_size == "medium":
+        return (1024, 5)
+    elif net_size == "large":
+        return (2048, 10)
     
 def get_act_fn_functional(act_fn):
     if act_fn == "relu":

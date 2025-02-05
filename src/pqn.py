@@ -27,7 +27,7 @@ Distribution.set_default_validate_args(False)
 torch.set_float32_matmul_precision("high")
 
 from utils.compute_hns import _compute_hns
-from utils.utils import parse_network_size, find_all_modules, get_act_fn_clss
+from utils.utils import parse_cnn_size, parse_mlp_size, find_all_modules, get_act_fn_clss
 from utils.args import PQNArgs
 from utils.compute_churn import compute_representation_and_q_churn, compute_ranks_from_features, plot_representation_change
 from utils.wrappers import RecordEpisodeStatistics
@@ -110,19 +110,42 @@ def update(obs, actions, returns):
     old_val_gathered = old_val.gather(1, actions.unsqueeze(1)).squeeze(1)
     q_loss = F.mse_loss(old_val_gathered, returns)
     q_loss.backward()
+
+    # log gradient norms per layer
+    layer_grad_norms = {}
+    for name, param in agent.named_parameters():
+        if param.grad is not None and "weight" in name:
+            layer_grad_norms[name] = param.grad.detach().norm(2)
+
+    # keep only even indices to discard layer norm
+    clean_grad_norms = {k: v for i, (k, v) in enumerate(layer_grad_norms.items()) if i % 2 == 0}
+    clean_grad_norms = {k.replace("network.", "").replace(".weight", "").replace(".", "_"): v for k, v in clean_grad_norms.items()}
+    clean_grad_norms = {f"{k.split('_')[0]}_{i}": v for i, (k, v) in enumerate(clean_grad_norms.items())}
+    c = 0
+    for k,v in clean_grad_norms.items():
+        if "trunk" in k:
+            clean_grad_norms[f"mlp_{c}"] = v
+            del clean_grad_norms[k]
+            c += 1
+            
+            
     gn = nn.utils.clip_grad_norm_(agent.parameters(), args.max_grad_norm)
     optimizer.step()
-    return q_loss.detach(), gn
+    
+    return q_loss.detach(), gn, clean_grad_norms
+
 
 update = tensordict.nn.TensorDictModule(
     update,
     in_keys=["obs", "actions", "returns"],
-    out_keys=["td_loss", "gn"],
+    out_keys=["td_loss", "gn", "clean_grad_norms"],
 )
 
 if __name__ == "__main__":
     ####### Argument Parsing #######
     args = tyro.cli(PQNArgs)
+    assert not (args.mlp_type == "residual" and args.mlp_size == "small"), "Residual MLP with small size is not supported"
+    
     batch_size = int(args.num_envs * args.num_steps)
     args.minibatch_size = batch_size // args.num_minibatches
     args.batch_size = args.num_minibatches * args.minibatch_size
@@ -131,11 +154,12 @@ if __name__ == "__main__":
     args.log_iterations = np.linspace(0, args.num_iterations, num=args.num_logs, endpoint=False, dtype=int)
     args.log_iterations = np.unique(args.log_iterations)
     args.log_iterations = np.insert(args.log_iterations, 0, 1)
-    args.log_iterations_img = np.linspace(0, args.num_iterations, num=args.num_img_logs, endpoint=False, dtype=int)
+    args.log_iterations_img = np.linspace(0, args.num_iterations, num=args.num_img_logs, dtype=int)
     args.log_iterations_img = np.unique(args.log_iterations_img)
     args.log_iterations_img = np.insert(args.log_iterations_img, 0, 1)
     
-    run_name = f"PQN_ENV:{args.env_id}_CNN:{args.cnn_type}_SIZE:{args.network_size}_LN:{args.use_ln}_ACTFN:{args.activation_fn}_SEED:{args.seed}"
+    
+    run_name = f"PQN_ENV:{args.env_id}_CNN:{args.cnn_type}_CNNSIZE:{args.cnn_size}_MLP:{args.mlp_type}_MLPSIZE:{args.mlp_size}_LN:{args.use_ln}_ACTFN:{args.activation_fn}_SEED:{args.seed}"
     args.run_name = run_name
     
     random.seed(args.seed)
@@ -168,13 +192,15 @@ if __name__ == "__main__":
     assert isinstance(envs.action_space, gym.spaces.Discrete), "only discrete action space is supported"
 
     ####### Agent #######
-    cnn_channels, trunk_hidden_size, trunk_num_layers = parse_network_size(args.network_size)
+    cnn_channels = parse_cnn_size(args.cnn_size)
+    trunk_hidden_size, trunk_num_layers = parse_mlp_size(args.mlp_size)
     agent_cfg = {
         "envs": envs,
         "use_ln": args.use_ln,
         "activation_fn": args.activation_fn,
         "cnn_type": args.cnn_type,
         "cnn_channels": cnn_channels,
+        "mlp_type": args.mlp_type,
         "trunk_hidden_size": trunk_hidden_size,
         "trunk_num_layers": trunk_num_layers,
         "device": device,
@@ -280,6 +306,10 @@ if __name__ == "__main__":
                         max_to_keep = min(4096, len(container_flat))
                         cntner_churn = container_flat[torch.randperm(len(container_flat))[:max_to_keep]]
                         churn_stats = compute_representation_and_q_churn(agent, old_agent, cntner_churn["obs"])
+                        per_layer_grad_norms = {
+                            f"gradient_norms/{k}": v.item() for k, v in out["clean_grad_norms"].items()
+                        }
+                        
                         try:
                             ranks = compute_ranks_from_features(agent, cntner_churn["obs"])
                         except:
@@ -293,19 +323,15 @@ if __name__ == "__main__":
         # log images                 
         # learning dynamics change per iteration
         if global_step_burnin is not None and iteration in args.log_iterations_img and prev_container is not None:
-            try:
-                plot_representation_change(
-                    agent,
-                    old_agent,
-                    container["obs"],
-                    prev_container["obs"],
-                    global_step=global_step,
-                    num_points=300,
-                    name="learning_dynamics_change_per_iteration",
-                )
-            except Exception as e:
-                print(f"Failed to compute learning dynamics plot per iteration: {e}")
-                pass
+            plot_representation_change(
+                agent,
+                old_agent,
+                container["obs"],
+                prev_container["obs"],
+                global_step=global_step,
+                num_points=300,
+                name="learning_dynamics_change_per_iteration",
+            )
         
         # logging   
         if global_step_burnin is not None and iteration in args.log_iterations:
@@ -338,7 +364,7 @@ if __name__ == "__main__":
                     "schedule/lr": optimizer.param_groups[0]["lr"],
                     
                 }
-                logs = {**logs, **churn_stats, **ranks}
+                logs = {**logs, **churn_stats, **ranks, **per_layer_grad_norms}
 
             wandb.log(
                 {"charts/global_step": global_step, **logs}, step=global_step

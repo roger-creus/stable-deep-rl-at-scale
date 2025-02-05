@@ -6,6 +6,7 @@ plots/*
 cluster_config.json
 run_config.json
 xgenius_commands.sh
+RUN_GRADIENT_FLOW_EXPS.sh
 submit_job.sh
 pom_env.py
 PPO_TRXL.py
