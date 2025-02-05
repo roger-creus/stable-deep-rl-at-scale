@@ -16,7 +16,6 @@ def plot_representation_change(
     old_agent,
     obs,
     prev_obs,
-    D=512,
     global_step=0,
     num_points=200,
     name="learning_dynamics_change_per_iteration"
@@ -25,16 +24,31 @@ def plot_representation_change(
     nsteps, nenvs, C, H, W = obs.shape
 
     # Preallocate tensors for storing representations and value estimates.
-    # For current obs:
-    agent_obs_representations = torch.zeros((nenvs, nsteps, D), device=obs.device)
+    # For current obs batch:
+    shapes = agent.get_layer_shapes()
+    layer_names = list(shapes.keys())
+    layer_shapes = list(shapes.values())
+    layer_shapes = [torch.tensor(s).prod().item() for s in layer_shapes]
+    
+    agent_obs_representations = {
+        layer_name: torch.zeros((nenvs, nsteps, layer_shape), device=obs.device) for layer_name, layer_shape in zip(layer_names, layer_shapes)
+    }
     agent_obs_values = torch.zeros((nenvs, nsteps), device=obs.device)
-    old_agent_obs_representations = torch.zeros((nenvs, nsteps, D), device=obs.device)
+
+    old_agent_obs_representations = {
+        layer_name: torch.zeros((nenvs, nsteps, layer_shape), device=obs.device) for layer_name, layer_shape in zip(layer_names, layer_shapes)
+    }
     old_agent_obs_values = torch.zeros((nenvs, nsteps), device=obs.device)
     
     # For previous obs:
-    agent_obs_prev_representations = torch.zeros((nenvs, nsteps, D), device=obs.device)
+    agent_obs_prev_representations = {
+        layer_name: torch.zeros((nenvs, nsteps, layer_shape), device=obs.device) for layer_name, layer_shape in zip(layer_names, layer_shapes)
+    }
     agent_obs_prev_values = torch.zeros((nenvs, nsteps), device=obs.device)
-    old_agent_obs_prev_representations = torch.zeros((nenvs, nsteps, D), device=obs.device)
+    
+    old_agent_obs_prev_representations = {
+        layer_name: torch.zeros((nenvs, nsteps, layer_shape), device=obs.device) for layer_name, layer_shape in zip(layer_names, layer_shapes)
+    }
     old_agent_obs_prev_values = torch.zeros((nenvs, nsteps), device=obs.device)
     
     # Preallocate for optimal actions (for current observations)
@@ -44,23 +58,21 @@ def plot_representation_change(
     # Loop over each environment (or sequence) and compute representations, values, and optimal actions.
     for i in range(nenvs):
         # Get representations for current and previous observations.
-        agent_obs_representation_ = agent.get_representation(obs[:, i])
-        agent_obs_prev_representation_ = agent.get_representation(prev_obs[:, i])
-        old_agent_obs_representation_ = old_agent.get_representation(obs[:, i])
-        old_agent_obs_prev_representation_ = old_agent.get_representation(prev_obs[:, i])
+        _, agent_obs_representation_ = agent.get_representation(obs[:, i], per_layer=True)
+        for k, v in agent_obs_representation_.items():
+            agent_obs_representations[k][i] = v.flatten(1)
         
-        # If the output is a tuple, assume the first element is the representation.
-        if isinstance(agent_obs_representation_, tuple):
-            agent_obs_representation_ = agent_obs_representation_[0]
-            agent_obs_prev_representation_ = agent_obs_prev_representation_[0]
-            old_agent_obs_representation_ = old_agent_obs_representation_[0]
-            old_agent_obs_prev_representation_ = old_agent_obs_prev_representation_[0]
+        _, agent_obs_prev_representation_ = agent.get_representation(prev_obs[:, i], per_layer=True)
+        for k, v in agent_obs_prev_representation_.items():
+            agent_obs_prev_representations[k][i] = v.flatten(1)
+
+        _, old_agent_obs_representation_ = old_agent.get_representation(obs[:, i], per_layer=True)
+        for k, v in old_agent_obs_representation_.items():
+            old_agent_obs_representations[k][i] = v.flatten(1)
         
-        # Store representations.
-        agent_obs_representations[i] = agent_obs_representation_
-        agent_obs_prev_representations[i] = agent_obs_prev_representation_
-        old_agent_obs_representations[i] = old_agent_obs_representation_
-        old_agent_obs_prev_representations[i] = old_agent_obs_prev_representation_
+        _, old_agent_obs_prev_representation_ = old_agent.get_representation(prev_obs[:, i], per_layer=True)
+        for k, v in old_agent_obs_prev_representation_.items():
+            old_agent_obs_prev_representations[k][i] = v.flatten(1)
         
         # Try computing the value estimates and optimal actions.
         try:
@@ -69,17 +81,15 @@ def plot_representation_change(
             agent_obs_prev_values[i] = agent.critic(agent_obs_prev_representation_).squeeze(-1)
             old_agent_obs_values[i] = old_agent.critic(old_agent_obs_representation_).squeeze(-1)
             old_agent_obs_prev_values[i] = old_agent.critic(old_agent_obs_prev_representation_).squeeze(-1)
-            # For optimal actions, assume the critic might not provide them so we try q_func:
-            #agent_q = agent.q_func(agent_obs_representation_)  # shape: (nsteps, n_actions)
-            #old_agent_q = old_agent.q_func(old_agent_obs_representation_)
         except Exception:
             pqn=True
-            agent_obs_values[i] = agent.q_func(agent_obs_representation_).max(1).values.squeeze(-1)
-            agent_obs_prev_values[i] = agent.q_func(agent_obs_prev_representation_).max(1).values.squeeze(-1)
-            old_agent_obs_values[i] = old_agent.q_func(old_agent_obs_representation_).max(1).values.squeeze(-1)
-            old_agent_obs_prev_values[i] = old_agent.q_func(old_agent_obs_prev_representation_).max(1).values.squeeze(-1)
-            agent_q = agent.q_func(agent_obs_representation_)
-            old_agent_q = old_agent.q_func(old_agent_obs_representation_)
+            last_layer = list(agent_obs_representation_.keys())[-1]
+            agent_obs_values[i] = agent.q_func(agent_obs_representation_[last_layer]).max(1).values.squeeze(-1)
+            agent_obs_prev_values[i] = agent.q_func(agent_obs_prev_representation_[last_layer]).max(1).values.squeeze(-1)
+            old_agent_obs_values[i] = old_agent.q_func(old_agent_obs_representation_[last_layer]).max(1).values.squeeze(-1)
+            old_agent_obs_prev_values[i] = old_agent.q_func(old_agent_obs_prev_representation_[last_layer]).max(1).values.squeeze(-1)
+            agent_q = agent.q_func(agent_obs_representation_[last_layer])
+            old_agent_q = old_agent.q_func(old_agent_obs_representation_[last_layer])
         
         # Determine optimal actions (argmax over Q-values) for current observations.
         if pqn:
@@ -89,8 +99,13 @@ def plot_representation_change(
     # -------------------------------
     # Process data for CURRENT observations (obs)
     # -------------------------------
-    agent_current_repr = agent_obs_representations.view(-1, D).cpu().numpy()
-    old_current_repr = old_agent_obs_representations.view(-1, D).cpu().numpy()
+    agent_current_repr = {}
+    for k,v in agent_obs_representations.items():
+        agent_current_repr[k] = v.view(-1, v.shape[-1]).cpu().numpy()
+    old_current_repr = {}
+    for k,v in old_agent_obs_representations.items():
+        old_current_repr[k] = v.view(-1, v.shape[-1]).cpu().numpy()
+    
     agent_current_values = agent_obs_values.view(-1).cpu().numpy()
     old_current_values = old_agent_obs_values.view(-1).cpu().numpy()
     
@@ -101,215 +116,279 @@ def plot_representation_change(
     
     # -- Quantitative Measures in the original embedding space --
     # L2 distances:
-    l2_dists_current = np.linalg.norm(agent_current_repr - old_current_repr, axis=1)
+    l2_dists_current = {}
+    for k in agent_current_repr.keys():
+        l2_dists_current[k] = np.linalg.norm(agent_current_repr[k] - old_current_repr[k], axis=1)
     # Cosine similarities & distances:
-    norm_agent = np.linalg.norm(agent_current_repr, axis=1)
-    norm_old = np.linalg.norm(old_current_repr, axis=1)
-    cos_sim_current = np.sum(agent_current_repr * old_current_repr, axis=1) / (norm_agent * norm_old + 1e-8)
-    cos_dists_current = 1 - cos_sim_current
-    
-    # Fit PCA on the concatenated current representations.
-    pca_current = PCA(n_components=2)
-    combined_current = np.concatenate([agent_current_repr, old_current_repr], axis=0)
-    pca_current.fit(combined_current)
-    
-    # Transform the representations.
-    agent_current_pca = pca_current.transform(agent_current_repr)
-    old_current_pca = pca_current.transform(old_current_repr)
-    
-    # Compute distances between current representations (in PCA space).
-    delta_current = np.linalg.norm(agent_current_pca - old_current_pca, axis=1)
-    
-    # Scale marker sizes by change magnitude.
-    marker_sizes_current = 60 + 200 * (delta_current / (delta_current.max() + 1e-8))
-    
-    # Flag the largest 10% of changes.
-    large_change_current = delta_current >= np.percentile(delta_current, 90)
-    
-    # Flag where the optimal action has changed.
-    if pqn:
-        action_changed_current = agent_opt_actions_np != old_agent_opt_actions_np
-    
-    # Subsample if needed.
-    n_total = agent_current_pca.shape[0]
-    if n_total > num_points:
-        idx = np.random.choice(n_total, num_points, replace=False)
-        agent_current_pca = agent_current_pca[idx]
-        old_current_pca = old_current_pca[idx]
-        agent_current_values = agent_current_values[idx]
-        old_current_values = old_current_values[idx]
-        marker_sizes_current = marker_sizes_current[idx]
-        large_change_current = large_change_current[idx]
+    norm_agent = {}
+    norm_old = {}
+    for k in agent_current_repr.keys():
+        norm_agent[k] = np.linalg.norm(agent_current_repr[k], axis=1)
+        norm_old[k] = np.linalg.norm(old_current_repr[k], axis=1)
+    cos_sim_current = {}
+    cos_dists_current = {}
+    for k in agent_current_repr.keys():
+        cos_sim_current[k] = np.sum(agent_current_repr[k] * old_current_repr[k], axis=1) / (norm_agent[k] * norm_old[k] + 1e-8)
+        cos_dists_current[k] = 1 - cos_sim_current[k]
+        
+    pca_results = {}
+    marker_sizes = {}
+    large_change_flags = {}
+    action_changed_flags = {} if pqn else None
+    delta_current_all = {}
+
+    for k in agent_current_repr.keys():
+        # Fit PCA on the concatenated current representations.
+        pca = PCA(n_components=2)
+        combined_repr = np.concatenate([agent_current_repr[k], old_current_repr[k]], axis=0)
+        pca.fit(combined_repr)
+        
+        # Transform the representations.
+        agent_pca = pca.transform(agent_current_repr[k])
+        old_pca = pca.transform(old_current_repr[k])
+        
+        # Compute distances between current representations (in PCA space).
+        delta_current = np.linalg.norm(agent_pca - old_pca, axis=1)
+        delta_current_all[k] = delta_current
+        
+        # Scale marker sizes by change magnitude.
+        marker_sizes[k] = 60 + 200 * (delta_current / (delta_current.max() + 1e-8))
+        
+        # Flag the largest 10% of changes.
+        large_change_flags[k] = delta_current >= np.percentile(delta_current, 90)
+        
+        # Flag where the optimal action has changed.
         if pqn:
-            action_changed_current = action_changed_current[idx]
-        delta_current = delta_current[idx]
+            action_changed_flags[k] = agent_opt_actions_np != old_agent_opt_actions_np
+        
+        # Store PCA results.
+        pca_results[k] = (agent_pca, old_pca)
+
+    # Subsample if needed.
+    n_total = next(iter(agent_current_repr.values())).shape[0]
+    idx = np.random.choice(n_total, num_points, replace=False)
+    if n_total > num_points:
+        for k in agent_current_repr.keys():
+            agent_pca, old_pca = pca_results[k]
+            pca_results[k] = (agent_pca[idx], old_pca[idx])
+            marker_sizes[k] = marker_sizes[k][idx]
+            large_change_flags[k] = large_change_flags[k][idx]
+            delta_current_all[k] = delta_current_all[k][idx]
+            action_changed_flags[k] = action_changed_flags[k][idx]
         
         if pqn:
             agent_opt_actions_np = agent_opt_actions_np[idx]
             old_agent_opt_actions_np = old_agent_opt_actions_np[idx]
+            agent_current_values = agent_current_values[idx]
+            old_current_values = old_current_values[idx]
     
     # -------------------------------
     # Process data for PREVIOUS observations (prev_obs)
     # -------------------------------
-    agent_prev_repr = agent_obs_prev_representations.view(-1, D).cpu().numpy()
-    old_prev_repr = old_agent_obs_prev_representations.view(-1, D).cpu().numpy()
+    agent_prev_repr = {}
+    for k,v in agent_obs_prev_representations.items():
+        agent_prev_repr[k] = v.view(-1, v.shape[-1]).cpu().numpy()
+    old_prev_repr = {}
+    for k,v in old_agent_obs_prev_representations.items():
+        old_prev_repr[k] = v.view(-1, v.shape[-1]).cpu().numpy()
+    
     agent_prev_values = agent_obs_prev_values.view(-1).cpu().numpy()
     old_prev_values = old_agent_obs_prev_values.view(-1).cpu().numpy()
     
     # For optimal actions on previous observations, we need to compute them.
     if pqn:
-        agent_prev_q = agent.q_func(agent_obs_prev_representations.view(-1, D))
-        old_agent_prev_q = old_agent.q_func(old_agent_obs_prev_representations.view(-1, D))
+        last_layer = list(agent_obs_prev_representation_.keys())[-1]
+        last_shape = agent_obs_prev_representation_[last_layer].shape[-1]
+        agent_prev_q = agent.q_func(agent_obs_prev_representations[last_layer].view(-1, last_shape))
+        old_agent_prev_q = old_agent.q_func(old_agent_obs_prev_representations[last_layer].view(-1, last_shape))
         agent_opt_actions_prev = agent_prev_q.argmax(dim=1).cpu().numpy()
         old_agent_opt_actions_prev = old_agent_prev_q.argmax(dim=1).cpu().numpy()
     else:
         agent_prev_q = agent.critic(agent_obs_prev_representations.view(-1, D))
         old_agent_prev_q = old_agent.critic(old_agent_obs_prev_representations.view(-1, D))
     
-    l2_dists_prev = np.linalg.norm(agent_prev_repr - old_prev_repr, axis=1)
-    norm_agent_prev = np.linalg.norm(agent_prev_repr, axis=1)
-    norm_old_prev = np.linalg.norm(old_prev_repr, axis=1)
-    cos_sim_prev = np.sum(agent_prev_repr * old_prev_repr, axis=1) / (norm_agent_prev * norm_old_prev + 1e-8)
-    cos_dists_prev = 1 - cos_sim_prev
+    l2_dists_prev = {}
+    for k in agent_prev_repr.keys():
+        l2_dists_prev[k] = np.linalg.norm(agent_prev_repr[k] - old_prev_repr[k], axis=1)
+    norm_agent_prev = {}
+    norm_old_prev = {}
+    for k in agent_prev_repr.keys():
+        norm_agent_prev[k] = np.linalg.norm(agent_prev_repr[k], axis=1)
+        norm_old_prev[k] = np.linalg.norm(old_prev_repr[k], axis=1)
+    cos_sim_prev = {}
+    cos_dists_prev = {}
+    for k in agent_prev_repr.keys():
+        cos_sim_prev[k] = np.sum(agent_prev_repr[k] * old_prev_repr[k], axis=1) / (norm_agent_prev[k] * norm_old_prev[k] + 1e-8)
+        cos_dists_prev[k] = 1 - cos_sim_prev[k]
+
+    pca_results_prev = {}
+    marker_sizes_prev = {}
+    large_change_flags_prev = {}
+    action_changed_flags_prev = {} if pqn else None
+    delta_prev_all = {}
     
-    # Fit PCA on the concatenated previous representations.
-    pca_prev = PCA(n_components=2)
-    combined_prev = np.concatenate([agent_prev_repr, old_prev_repr], axis=0)
-    pca_prev.fit(combined_prev)
-    
-    # Transform the representations.
-    agent_prev_pca = pca_prev.transform(agent_prev_repr)
-    old_prev_pca = pca_prev.transform(old_prev_repr)
-    
-    # Compute distances for previous observations.
-    delta_prev = np.linalg.norm(agent_prev_pca - old_prev_pca, axis=1)
-    
-    # Scale marker sizes.
-    marker_sizes_prev = 60 + 200 * (delta_prev / (delta_prev.max() + 1e-8))
-    
-    # Flag the largest 10% of changes.
-    large_change_prev = delta_prev >= np.percentile(delta_prev, 90)
-    
-    # Flag where the optimal action has changed.
-    if pqn:
-        action_changed_prev = agent_opt_actions_prev != old_agent_opt_actions_prev
-    
-    # Subsample previous observations if needed.
-    n_total_prev = agent_prev_pca.shape[0]
-    if n_total_prev > num_points:
-        idx_prev = np.random.choice(n_total_prev, num_points, replace=False)
-        agent_prev_pca = agent_prev_pca[idx_prev]
-        old_prev_pca = old_prev_pca[idx_prev]
-        agent_prev_values = agent_prev_values[idx_prev]
-        old_prev_values = old_prev_values[idx_prev]
-        marker_sizes_prev = marker_sizes_prev[idx_prev]
-        large_change_prev = large_change_prev[idx_prev]
-        delta_prev = delta_prev[idx_prev]
+    for k in agent_prev_repr.keys():
+        pca = PCA(n_components=2)
+        combined_repr = np.concatenate([agent_prev_repr[k], old_prev_repr[k]], axis=0)
+        pca.fit(combined_repr)
+        
+        agent_prev_pca = pca.transform(agent_prev_repr[k])
+        old_prev_pca = pca.transform(old_prev_repr[k])
+        
+        delta_prev = np.linalg.norm(agent_prev_pca - old_prev_pca, axis=1)
+        delta_prev_all[k] = delta_prev
+        
+        marker_sizes_prev[k] = 60 + 200 * (delta_prev / (delta_prev.max() + 1e-8))
+        large_change_flags_prev[k] = delta_prev >= np.percentile(delta_prev, 90)
+        
         if pqn:
-            action_changed_prev = action_changed_prev[idx_prev]
-            agent_opt_actions_prev = agent_opt_actions_prev[idx_prev]
-            old_agent_opt_actions_prev = old_agent_opt_actions_prev[idx_prev]
-    
-    # -------------------------------
-    # Create a combined figure with 2 subplots (1 row, 2 columns)
-    # -------------------------------
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
-    
-    # --- Left subplot: CURRENT Observations ---
-    for a_pt, o_pt in zip(agent_current_pca, old_current_pca):
-        ax1.plot([o_pt[0], a_pt[0]], [o_pt[1], a_pt[1]], color='black', alpha=0.8, linewidth=1.25)
-    
-    sc1 = ax1.scatter(old_current_pca[:, 0], old_current_pca[:, 1],
-                      marker='x', c=old_current_values, cmap='viridis',
-                      label='Old Agent', s=marker_sizes_current)
-    
-    # Plot each current agent point individually so we can set custom edges.
-    for i in range(len(agent_current_pca)):
+            action_changed_flags_prev[k] = agent_opt_actions_prev != old_agent_opt_actions_prev
+        
+        pca_results_prev[k] = (agent_prev_pca, old_prev_pca)
+        
+    if n_total > num_points:
+        for k in agent_prev_repr.keys():
+            agent_prev_pca, old_prev_pca = pca_results_prev[k]
+            pca_results_prev[k] = (agent_prev_pca[idx], old_prev_pca[idx])
+            marker_sizes_prev[k] = marker_sizes_prev[k][idx]
+            large_change_flags_prev[k] = large_change_flags_prev[k][idx]
+            delta_prev_all[k] = delta_prev_all[k][idx]
+            action_changed_flags_prev[k] = action_changed_flags_prev[k][idx]
+        
         if pqn:
-            # Determine edge color.
-            if large_change_current[i] and action_changed_current[i]:
-                edge_color = 'purple'
-            elif large_change_current[i]:
-                edge_color = 'red'
-            elif pqn and action_changed_current[i]:
-                edge_color = 'black'
+            agent_opt_actions_prev = agent_opt_actions_prev[idx]
+            old_agent_opt_actions_prev = old_agent_opt_actions_prev[idx]
+            agent_prev_values = agent_prev_values[idx]
+            old_prev_values = old_prev_values[idx]
+    
+    # Loop over each representation key and create a plot.
+    for k in agent_current_repr.keys():
+        # Create a figure with 2 subplots (current on the left, previous on the right)
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
+        
+        # -------------------------------
+        # CURRENT Observations
+        # -------------------------------
+        # Unpack PCA results for current observations for key k.
+        agent_current_pca, old_current_pca = pca_results[k]
+        # Retrieve marker sizes and flags.
+        marker_sizes_current = marker_sizes[k]
+        large_change_current = large_change_flags[k]
+        # For action change flag, if using pqn.
+        if pqn:
+            act_change_current = action_changed_flags[k]
+        
+        # Plot connecting lines for each point.
+        for a_pt, o_pt in zip(agent_current_pca, old_current_pca):
+            ax1.plot([o_pt[0], a_pt[0]], [o_pt[1], a_pt[1]], color='black', alpha=0.8, linewidth=1.25)
+        
+        # Plot the old agent points.
+        sc1 = ax1.scatter(old_current_pca[:, 0], old_current_pca[:, 1],
+                        marker='x', c=old_current_values, cmap='viridis',
+                        label='Old Agent', s=marker_sizes_current)
+        
+        # Plot each current agent point individually to allow custom edge colors.
+        for i in range(len(agent_current_pca)):
+            if pqn:
+                # Determine edge color.
+                if large_change_current[i] and act_change_current[i]:
+                    edge_color = 'purple'
+                elif large_change_current[i]:
+                    edge_color = 'red'
+                elif act_change_current[i]:
+                    edge_color = 'black'
+                else:
+                    edge_color = 'none'
             else:
                 edge_color = 'none'
-        else:
-            edge_color = 'none'
+            
+            # Normalize the agent current value for a color mapping.
+            norm_val = (agent_current_values[i] - agent_current_values.min()) / (agent_current_values.ptp() + 1e-8)
+            face_color = plt.cm.viridis(norm_val)
+            ax1.scatter(agent_current_pca[i, 0], agent_current_pca[i, 1],
+                        marker='o',
+                        s=marker_sizes_current[i],
+                        facecolor=face_color,
+                        edgecolor=edge_color,
+                        linewidth=2,
+                        label='Agent' if i == 0 else "")
         
-        norm_val = (agent_current_values[i] - agent_current_values.min()) / (agent_current_values.ptp() + 1e-8)
-        face_color = plt.cm.viridis(norm_val)
-        ax1.scatter(agent_current_pca[i, 0], agent_current_pca[i, 1],
-                    marker='o',
-                    s=marker_sizes_current[i],
-                    facecolor=face_color,
-                    edgecolor=edge_color,
-                    linewidth=2,
-                    label='Agent' if i == 0 else "")
-    
-    ax1.set_title("Current Observations")
-    ax1.set_xlabel("PCA Dimension 1")
-    ax1.set_ylabel("PCA Dimension 2")
-    ax1.legend()
-    cbar1 = fig.colorbar(sc1, ax=ax1)
-    cbar1.set_label("Old Agent Value Estimate")
-    
-    # --- Right subplot: PREVIOUS Observations ---
-    for a_pt, o_pt in zip(agent_prev_pca, old_prev_pca):
-        ax2.plot([o_pt[0], a_pt[0]], [o_pt[1], a_pt[1]], color='black', alpha=0.8, linewidth=1.25)
-    
-    sc2 = ax2.scatter(old_prev_pca[:, 0], old_prev_pca[:, 1],
-                      marker='x', c=old_prev_values, cmap='viridis',
-                      label='Old Agent', s=marker_sizes_prev)
-    
-    # Plot each previous agent point individually with custom edges.
-    for i in range(len(agent_prev_pca)):
+        ax1.set_title(f"Current Observations - {k}")
+        ax1.set_xlabel("PCA Dimension 1")
+        ax1.set_ylabel("PCA Dimension 2")
+        ax1.legend()
+        cbar1 = fig.colorbar(sc1, ax=ax1)
+        cbar1.set_label("Old Agent Value Estimate")
+        
+        # -------------------------------
+        # PREVIOUS Observations
+        # -------------------------------
+        # Unpack PCA results for previous observations for key k.
+        agent_prev_pca, old_prev_pca = pca_results_prev[k]
+        marker_sizes_prev_key = marker_sizes_prev[k]
+        large_change_prev = large_change_flags_prev[k]
         if pqn:
-            if large_change_prev[i] and action_changed_prev[i]:
-                edge_color = 'purple'
-            elif large_change_prev[i]:
-                edge_color = 'red'
-            elif pqn and action_changed_prev[i]:
-                edge_color = 'black'
+            act_change_prev = action_changed_flags_prev[k]
+        
+        # Plot connecting lines.
+        for a_pt, o_pt in zip(agent_prev_pca, old_prev_pca):
+            ax2.plot([o_pt[0], a_pt[0]], [o_pt[1], a_pt[1]], color='black', alpha=0.8, linewidth=1.25)
+        
+        # Plot the old agent points.
+        sc2 = ax2.scatter(old_prev_pca[:, 0], old_prev_pca[:, 1],
+                        marker='x', c=old_prev_values, cmap='viridis',
+                        label='Old Agent', s=marker_sizes_prev_key)
+        
+        # Plot each previous agent point individually with custom edge colors.
+        for i in range(len(agent_prev_pca)):
+            if pqn:
+                if large_change_prev[i] and act_change_prev[i]:
+                    edge_color = 'purple'
+                elif large_change_prev[i]:
+                    edge_color = 'red'
+                elif act_change_prev[i]:
+                    edge_color = 'black'
+                else:
+                    edge_color = 'none'
             else:
                 edge_color = 'none'
-        else:
-            edge_color = 'none'
+            
+            norm_val = (agent_prev_values[i] - agent_prev_values.min()) / (agent_prev_values.ptp() + 1e-8)
+            face_color = plt.cm.viridis(norm_val)
+            ax2.scatter(agent_prev_pca[i, 0], agent_prev_pca[i, 1],
+                        marker='o',
+                        s=marker_sizes_prev_key[i],
+                        facecolor=face_color,
+                        edgecolor=edge_color,
+                        linewidth=2,
+                        label='Agent' if i == 0 else "")
         
-        norm_val = (agent_prev_values[i] - agent_prev_values.min()) / (agent_prev_values.ptp() + 1e-8)
-        face_color = plt.cm.viridis(norm_val)
-        ax2.scatter(agent_prev_pca[i, 0], agent_prev_pca[i, 1],
-                    marker='o',
-                    s=marker_sizes_prev[i],
-                    facecolor=face_color,
-                    edgecolor=edge_color,
-                    linewidth=2,
-                    label='Agent' if i == 0 else "")
+        ax2.set_title(f"Previous Observations - {k}")
+        ax2.set_xlabel("PCA Dimension 1")
+        ax2.set_ylabel("PCA Dimension 2")
+        ax2.legend()
+        cbar2 = fig.colorbar(sc2, ax=ax2)
+        cbar2.set_label("Old Agent Value Estimate")
+        plt.tight_layout()
+        
+        # Log the figure to wandb with a key that includes the current representation key.
+        wandb.log({f"{k}_{name}/representation_change": wandb.Image(fig)}, step=global_step)
+        wandb.log({
+            f"{k}_{name}/mean_l2_distance_current": l2_dists_current[k].mean(),
+            f"{k}_{name}/mean_cosine_distance_current": cos_dists_current[k].mean(),
+            f"{k}_{name}/var_l2_distance_current": l2_dists_current[k].var(),
+            f"{k}_{name}/var_cosine_distance_current": cos_dists_current[k].var(),
+            f"{k}_{name}/mean_l2_distance_prev": l2_dists_prev[k].mean(),
+            f"{k}_{name}/mean_cosine_distance_prev": cos_dists_prev[k].mean(),
+            f"{k}_{name}/var_l2_distance_prev": l2_dists_prev[k].var(),
+            f"{k}_{name}/var_cosine_distance_prev": cos_dists_prev[k].var(),
+        }, step=global_step)
+        plt.close(fig)
     
-    ax2.set_title("Previous Observations")
-    ax2.set_xlabel("PCA Dimension 1")
-    ax2.set_ylabel("PCA Dimension 2")
-    ax2.legend()
-    cbar2 = fig.colorbar(sc2, ax=ax2)
-    cbar2.set_label("Old Agent Value Estimate")
-    
-    plt.tight_layout()
-    wandb.log({f"{name}/representation_change": wandb.Image(fig)}, step=global_step)
     wandb.log({
-        f"{name}/mean_l2_distance_current": l2_dists_current.mean(),
-        f"{name}/mean_cosine_distance_current": cos_dists_current.mean(),
-        f"{name}/var_l2_distance_current": l2_dists_current.var(),
-        f"{name}/var_cosine_distance_current": cos_dists_current.var(),
         f"{name}/policy_churn_current": 100 * np.mean(agent_opt_actions_np != old_agent_opt_actions_np) if pqn else 0,
-        f"{name}/mean_l2_distance_prev": l2_dists_prev.mean(),
-        f"{name}/mean_cosine_distance_prev": cos_dists_prev.mean(),
-        f"{name}/var_l2_distance_prev": l2_dists_prev.var(),
-        f"{name}/var_cosine_distance_prev": cos_dists_prev.var(),
         f"{name}/policy_churn_prev": 100 * np.mean(agent_opt_actions_prev != old_agent_opt_actions_prev) if pqn else 0,
     }, step=global_step)
-
-    plt.close(fig)
 
 @torch.no_grad()
 def plot_visitation_distribution(

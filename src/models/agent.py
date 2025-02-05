@@ -77,30 +77,65 @@ class PQNAgent(nn.Module):
         hidden = self.get_representation(x)
         return self.get_Q(hidden)
     
-    def get_representation(self, x, dead_neurons=False):
+    def get_representation(self, x, dead_neurons=False, per_layer=False):
         x = x / 255.0
         neurons = []
+        count = 0
         clss_to_hook = nn.LayerNorm if self.use_ln else nn.Conv2d
         for module in self.network.cnn.children():
             x = module(x)
-            if dead_neurons and (isinstance(module, clss_to_hook) or isinstance(module, ConvSequence)):
+            if (dead_neurons or per_layer) and (isinstance(module, clss_to_hook) or isinstance(module, ConvSequence)):
                 neurons.append(
-                    ('cnn', F.relu(x.clone()).detach())
+                    (f'cnn_{count}', F.relu(x.clone()).detach())
                 )
+                count += 1
                 
+        count = 0
         clss_to_hook = nn.LayerNorm if self.use_ln else nn.Linear
         for module in self.trunk.net.children():
             x = module(x)
-            if dead_neurons and isinstance(module, clss_to_hook):
+            if (dead_neurons or per_layer) and isinstance(module, clss_to_hook):
                 neurons.append(
-                    ('mlp', F.relu(x.clone()).detach())
+                    (f'mlp_{count}', F.relu(x.clone()).detach())
                 )
+                count += 1
+
+        if per_layer:
+            neurons_dict = {}
+            for layer, ns in neurons:
+                neurons_dict[layer] = ns
+            return x, neurons_dict
 
         if dead_neurons:
             dead_neurons = self.calculate_dead_neurons(neurons)
             return x, dead_neurons
         
         return x
+    
+    def get_layer_shapes(self):
+        layer_shapes = {}
+        count = 0
+        
+        clss_to_hook = nn.LayerNorm if self.use_ln else nn.Conv2d
+        for module in self.network.cnn.children():
+            if isinstance(module, clss_to_hook) or isinstance(module, ConvSequence):
+                if clss_to_hook == nn.LayerNorm:
+                    layer_shapes[f'cnn_{count}'] = module.normalized_shape
+                else:
+                    layer_shapes[f'cnn_{count}'] = module.output_shape
+                count += 1
+                
+        clss_to_hook = nn.LayerNorm if self.use_ln else nn.Linear
+        count = 0
+        for module in self.trunk.net.children():
+            if isinstance(module, clss_to_hook):
+                if clss_to_hook == nn.LayerNorm:
+                    layer_shapes[f'mlp_{count}'] = module.normalized_shape
+                else:
+                    layer_shapes[f'mlp_{count}'] = module.output_shape
+                count += 1
+                    
+        return layer_shapes
 
     def get_Q(self, hidden):
         return self.q_func(hidden)
@@ -121,8 +156,9 @@ class PQNAgent(nn.Module):
         for layer, ns in neurons:
             score = ns.mean(dim=0)
             mask = score <= 0.0
-            total[layer] += torch.numel(mask)
-            dead[layer] += (mask.sum().item())
+            layer_name = layer.split("_")[0]
+            total[layer_name] += torch.numel(mask)
+            dead[layer_name] += (mask.sum().item())
         
         fraction_dead = {
             "cnn" : dead["cnn"]/total["cnn"] * 100,

@@ -260,20 +260,19 @@ if __name__ == "__main__":
                         plot_rlact(all_act_fns, _act_clss_fn, ncols=2, global_step=global_step)
                         
                     # learning dynamics change per batch
-                    try:
-                        plot_representation_change(
-                            agent,
-                            old_agent,
-                            container["obs"],
-                            prev_container["obs"],
-                            D=trunk_hidden_size,
-                            global_step=global_step,
-                            num_points=300,
-                            name="learning_dynamics_change_per_batch",
-                        )
-                    except Exception as e:
-                        print(f"Failed to compute learning dynamics plot per batch: {e}")
-                        pass
+                    # try:
+                    #     plot_representation_change(
+                    #         agent,
+                    #         old_agent,
+                    #         container["obs"],
+                    #         prev_container["obs"],
+                    #         global_step=global_step,
+                    #         num_points=300,
+                    #         name="learning_dynamics_change_per_batch",
+                    #     )
+                    # except Exception as e:
+                    #     print(f"Failed to compute learning dynamics plot per batch: {e}")
+                    #     pass
                         
                 # log churn stats
                 if epoch == 0 and b_idx == 0 and global_step_burnin is not None and iteration in args.log_iterations:
@@ -300,7 +299,6 @@ if __name__ == "__main__":
                     old_agent,
                     container["obs"],
                     prev_container["obs"],
-                    D=trunk_hidden_size,
                     global_step=global_step,
                     num_points=300,
                     name="learning_dynamics_change_per_iteration",
