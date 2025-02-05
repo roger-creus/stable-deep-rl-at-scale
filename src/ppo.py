@@ -355,15 +355,19 @@ if __name__ == "__main__":
         # log images                 
         # learning dynamics change per iteration
         if global_step_burnin is not None and iteration in args.log_iterations_img and prev_container is not None:
-            plot_representation_change(
-                agent,
-                old_agent,
-                container["obs"],
-                prev_container["obs"],
-                global_step=global_step,
-                num_points=300,
-                name="learning_dynamics_change_per_iteration",
-            )
+            try:
+                plot_representation_change(
+                    agent,
+                    old_agent,
+                    container["obs"],
+                    prev_container["obs"],
+                    global_step=global_step,
+                    num_points=300,
+                    name="learning_dynamics_change_per_iteration",
+                )
+            except Exception as e:
+                print(f"Failed to compute learning dynamics plot per iteration: {e}")
+                pass
 
         if global_step_burnin is not None and iteration in args.log_iterations:
             cur_time = time.time()
