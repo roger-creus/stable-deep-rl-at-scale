@@ -62,7 +62,7 @@ def lambda_returns(next_obs, next_done, container):
     returns = container["returns"] = torch.stack(list(reversed(returns)))
     return container
 
-def rollout(obs, done, avg_returns=[]):
+def rollout(obs, done, avg_returns=[], avg_lengths=[]):
     ts = []
     for step in range(args.num_steps):
         q_values = policy(obs)
@@ -82,7 +82,9 @@ def rollout(obs, done, avg_returns=[]):
             idx = idx & torch.as_tensor(info["lives"] == 0, device=next_done.device, dtype=torch.bool)
             if idx.any():
                 r = torch.as_tensor(info["r"])
+                l = torch.as_tensor(info["l"]).float()
                 avg_returns.extend(r[idx])
+                avg_lengths.extend(l[idx])
 
         ts.append(
             tensordict.TensorDict._new_unsafe(
@@ -144,7 +146,7 @@ if __name__ == "__main__":
 
     ####### Wandb Setup #######
     wandb.init(
-        project=f"debug-pqn",
+        project=args.wandb_project_id,
         name=run_name + f"_{int(time.time())}",
         config=vars(args),
         save_code=True,
@@ -209,6 +211,7 @@ if __name__ == "__main__":
     ####### Training Loop #######
     prev_container = None
     avg_returns = deque(maxlen=20)
+    avg_lengths = deque(maxlen=20)
     global_step = 0
     container_local = None
     next_obs = torch.tensor(envs.reset(), device=device, dtype=torch.uint8)
@@ -230,7 +233,7 @@ if __name__ == "__main__":
 
         # collect rollout
         torch.compiler.cudagraph_mark_step_begin()
-        next_obs, next_done, container = rollout(next_obs, next_done, avg_returns=avg_returns)
+        next_obs, next_done, container = rollout(next_obs, next_done, avg_returns=avg_returns, avg_lengths=avg_lengths)
         global_step += container.numel()
         
         # compute lambda returns
@@ -313,17 +316,21 @@ if __name__ == "__main__":
             global_step_burnin = global_step
             start_time = cur_time
             avg_returns_t = torch.tensor(avg_returns).mean()
+            avg_lengths_t = torch.tensor(avg_lengths).mean()
             pbar.set_description(
                 f"global.step: {global_step: 8d}, "
                 f"sps: {speed: 4.1f} sps, "
                 f"avg.ep.return: {avg_returns_t: 4.2f},"
+                f"avg.ep.length: {avg_lengths_t: 4.2f}"
             )
         
             with torch.no_grad():
                 ep_return = np.array(avg_returns).mean() if len(avg_returns) > 0 else 0
+                ep_length = np.array(avg_lengths).mean() if len(avg_lengths) > 0 else 0
                 logs = {
                     "charts/sps": speed,
                     "charts/episode_return": ep_return,
+                    "charts/episode_length": ep_length,
                     "charts/hns": _compute_hns(args.env_id, ep_return),
                     "losses/lambda_returns": container["returns"].mean(),
                     "losses/q_values": container["vals"].mean(),

@@ -7,6 +7,8 @@ cluster_config.json
 run_config.json
 xgenius_commands.sh
 submit_job.sh
+pom_env.py
+PPO_TRXL.py
 
 *.sif
 *.pyc

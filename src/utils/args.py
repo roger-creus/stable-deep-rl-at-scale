@@ -13,10 +13,12 @@ class PPOArgs:
     """if toggled, cuda will be enabled by default"""
     capture_video: bool = False
     """whether to capture videos of the agent performances (check out `videos` folder)"""
-    num_logs: int = 200
+    num_logs: int = 1000
     """Number of logs to save."""
     num_img_logs: int = 10
     """Number of image logs to save."""
+    wandb_project_id: str = "atari10-ppo"
+    """the wandb project name"""
 
     # Algorithm specific arguments
     env_id: str = "Breakout-v5"
@@ -27,7 +29,7 @@ class PPOArgs:
     """the learning rate of the optimizer"""
     num_envs: int = 128
     """the number of parallel game environments"""
-    num_steps: int = 32
+    num_steps: int = 64
     """the number of steps to run in each environment per policy rollout"""
     anneal_lr: bool = True
     """Toggle learning rate annealing for policy and value networks"""
@@ -35,9 +37,9 @@ class PPOArgs:
     """the discount factor gamma"""
     gae_lambda: float = 0.95
     """the lambda for the general advantage estimation"""
-    num_minibatches: int = 16
+    num_minibatches: int = 8
     """the number of mini-batches"""
-    update_epochs: int = 4
+    update_epochs: int = 3
     """the K epochs to update the policy"""
     norm_adv: bool = True
     """Toggles advantages normalization"""
@@ -54,16 +56,30 @@ class PPOArgs:
     target_kl: float = None
     """the target KL divergence threshold"""
 
-
     # Agent Args
     use_ln: bool = False
     """whether to use layer normalization"""
     cnn_type: str = "atari"
     """the type of the CNN"""
-    network_size: str = "default" # small, medium, large, default
+    network_size: str = "default" # small, medium, large
     """the size of the network"""
+    activation_fn: str = "relu"
+    """the activation function of the network"""
     shared_trunk: bool = True
     """whether to use a shared trunk agent"""
+    
+    # Transformer-XL specific arguments
+    trxl_num_layers: int = 3
+    """the number of transformer layers"""
+    trxl_num_heads: int = 4
+    """the number of heads used in multi-head attention"""
+    trxl_dim: int = 384
+    """the dimension of the transformer"""
+    trxl_memory_length: int = 128
+    """the length of TrXL's sliding memory window"""
+    trxl_positional_encoding: str = "absolute"
+    """the positional encoding type of the transformer, choices: "", "absolute", "learned" """
+    max_episode_steps: int = 27000
 
     # to be filled in runtime
     batch_size: int = 0
@@ -97,6 +113,8 @@ class PQNArgs:
     """Number of logs to save."""
     num_img_logs: int = 10
     """Number of image logs to save."""
+    wandb_project_id: str = "atari10-pqn"
+    """the wandb project name"""
 
     # Algorithm specific arguments
     env_id: str = "Breakout-v5"
@@ -137,6 +155,16 @@ class PQNArgs:
     """the size of the network"""
     activation_fn: str = "relu"
     """the activation function of the network"""
+    
+    # Soft PQN Args
+    alpha_lr: float = 1e-4
+    """the learning rate of the alpha parameter"""
+    target_entropy_init_scale: float = 0.98
+    """the maximum target entropy ratio"""
+    target_entropy_end_scale: float = 0.05
+    """the minimum target entropy ratio"""
+    target_entropy_fraction: float = 0.8
+    """the fraction of `total_timesteps` it takes from start to end"""
 
     # to be filled in runtime
     batch_size: int = 0

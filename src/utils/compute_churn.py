@@ -64,14 +64,16 @@ def plot_representation_change(
         
         # Try computing the value estimates and optimal actions.
         try:
+            pqn=False
             agent_obs_values[i] = agent.critic(agent_obs_representation_).squeeze(-1)
             agent_obs_prev_values[i] = agent.critic(agent_obs_prev_representation_).squeeze(-1)
             old_agent_obs_values[i] = old_agent.critic(old_agent_obs_representation_).squeeze(-1)
             old_agent_obs_prev_values[i] = old_agent.critic(old_agent_obs_prev_representation_).squeeze(-1)
             # For optimal actions, assume the critic might not provide them so we try q_func:
-            agent_q = agent.q_func(agent_obs_representation_)  # shape: (nsteps, n_actions)
-            old_agent_q = old_agent.q_func(old_agent_obs_representation_)
+            #agent_q = agent.q_func(agent_obs_representation_)  # shape: (nsteps, n_actions)
+            #old_agent_q = old_agent.q_func(old_agent_obs_representation_)
         except Exception:
+            pqn=True
             agent_obs_values[i] = agent.q_func(agent_obs_representation_).max(1).values.squeeze(-1)
             agent_obs_prev_values[i] = agent.q_func(agent_obs_prev_representation_).max(1).values.squeeze(-1)
             old_agent_obs_values[i] = old_agent.q_func(old_agent_obs_representation_).max(1).values.squeeze(-1)
@@ -80,8 +82,9 @@ def plot_representation_change(
             old_agent_q = old_agent.q_func(old_agent_obs_representation_)
         
         # Determine optimal actions (argmax over Q-values) for current observations.
-        agent_opt_actions[i] = agent_q.argmax(dim=1)
-        old_agent_opt_actions[i] = old_agent_q.argmax(dim=1)
+        if pqn:
+            agent_opt_actions[i] = agent_q.argmax(dim=1)
+            old_agent_opt_actions[i] = old_agent_q.argmax(dim=1)
     
     # -------------------------------
     # Process data for CURRENT observations (obs)
@@ -92,8 +95,9 @@ def plot_representation_change(
     old_current_values = old_agent_obs_values.view(-1).cpu().numpy()
     
     # Optimal actions for current obs.
-    agent_opt_actions_np = agent_opt_actions.view(-1).cpu().numpy()
-    old_agent_opt_actions_np = old_agent_opt_actions.view(-1).cpu().numpy()
+    if pqn:
+        agent_opt_actions_np = agent_opt_actions.view(-1).cpu().numpy()
+        old_agent_opt_actions_np = old_agent_opt_actions.view(-1).cpu().numpy()
     
     # -- Quantitative Measures in the original embedding space --
     # L2 distances:
@@ -103,14 +107,6 @@ def plot_representation_change(
     norm_old = np.linalg.norm(old_current_repr, axis=1)
     cos_sim_current = np.sum(agent_current_repr * old_current_repr, axis=1) / (norm_agent * norm_old + 1e-8)
     cos_dists_current = 1 - cos_sim_current
-    
-    # print("Current Observations Embedding Differences:")
-    # print("  L2 distance: mean = {:.4f}, std = {:.4f}, max = {:.4f}".format(
-    #     l2_dists_current.mean(), l2_dists_current.std(), l2_dists_current.max()))
-    # print("  Cosine distance: mean = {:.4f}, std = {:.4f}, max = {:.4f}".format(
-    #     cos_dists_current.mean(), cos_dists_current.std(), cos_dists_current.max()))
-    # pct_opt_changed_current = 100 * np.mean(agent_opt_actions_np != old_agent_opt_actions_np)
-    # print("  Percentage of observations with changed optimal action: {:.2f}%".format(pct_opt_changed_current))
     
     # Fit PCA on the concatenated current representations.
     pca_current = PCA(n_components=2)
@@ -131,7 +127,8 @@ def plot_representation_change(
     large_change_current = delta_current >= np.percentile(delta_current, 90)
     
     # Flag where the optimal action has changed.
-    action_changed_current = agent_opt_actions_np != old_agent_opt_actions_np
+    if pqn:
+        action_changed_current = agent_opt_actions_np != old_agent_opt_actions_np
     
     # Subsample if needed.
     n_total = agent_current_pca.shape[0]
@@ -143,10 +140,13 @@ def plot_representation_change(
         old_current_values = old_current_values[idx]
         marker_sizes_current = marker_sizes_current[idx]
         large_change_current = large_change_current[idx]
-        action_changed_current = action_changed_current[idx]
+        if pqn:
+            action_changed_current = action_changed_current[idx]
         delta_current = delta_current[idx]
-        agent_opt_actions_np = agent_opt_actions_np[idx]
-        old_agent_opt_actions_np = old_agent_opt_actions_np[idx]
+        
+        if pqn:
+            agent_opt_actions_np = agent_opt_actions_np[idx]
+            old_agent_opt_actions_np = old_agent_opt_actions_np[idx]
     
     # -------------------------------
     # Process data for PREVIOUS observations (prev_obs)
@@ -157,14 +157,14 @@ def plot_representation_change(
     old_prev_values = old_agent_obs_prev_values.view(-1).cpu().numpy()
     
     # For optimal actions on previous observations, we need to compute them.
-    try:
+    if pqn:
         agent_prev_q = agent.q_func(agent_obs_prev_representations.view(-1, D))
         old_agent_prev_q = old_agent.q_func(old_agent_obs_prev_representations.view(-1, D))
-    except Exception:
+        agent_opt_actions_prev = agent_prev_q.argmax(dim=1).cpu().numpy()
+        old_agent_opt_actions_prev = old_agent_prev_q.argmax(dim=1).cpu().numpy()
+    else:
         agent_prev_q = agent.critic(agent_obs_prev_representations.view(-1, D))
         old_agent_prev_q = old_agent.critic(old_agent_obs_prev_representations.view(-1, D))
-    agent_opt_actions_prev = agent_prev_q.argmax(dim=1).cpu().numpy()
-    old_agent_opt_actions_prev = old_agent_prev_q.argmax(dim=1).cpu().numpy()
     
     l2_dists_prev = np.linalg.norm(agent_prev_repr - old_prev_repr, axis=1)
     norm_agent_prev = np.linalg.norm(agent_prev_repr, axis=1)
@@ -191,7 +191,8 @@ def plot_representation_change(
     large_change_prev = delta_prev >= np.percentile(delta_prev, 90)
     
     # Flag where the optimal action has changed.
-    action_changed_prev = agent_opt_actions_prev != old_agent_opt_actions_prev
+    if pqn:
+        action_changed_prev = agent_opt_actions_prev != old_agent_opt_actions_prev
     
     # Subsample previous observations if needed.
     n_total_prev = agent_prev_pca.shape[0]
@@ -203,10 +204,11 @@ def plot_representation_change(
         old_prev_values = old_prev_values[idx_prev]
         marker_sizes_prev = marker_sizes_prev[idx_prev]
         large_change_prev = large_change_prev[idx_prev]
-        action_changed_prev = action_changed_prev[idx_prev]
         delta_prev = delta_prev[idx_prev]
-        agent_opt_actions_prev = agent_opt_actions_prev[idx_prev]
-        old_agent_opt_actions_prev = old_agent_opt_actions_prev[idx_prev]
+        if pqn:
+            action_changed_prev = action_changed_prev[idx_prev]
+            agent_opt_actions_prev = agent_opt_actions_prev[idx_prev]
+            old_agent_opt_actions_prev = old_agent_opt_actions_prev[idx_prev]
     
     # -------------------------------
     # Create a combined figure with 2 subplots (1 row, 2 columns)
@@ -223,13 +225,16 @@ def plot_representation_change(
     
     # Plot each current agent point individually so we can set custom edges.
     for i in range(len(agent_current_pca)):
-        # Determine edge color.
-        if large_change_current[i] and action_changed_current[i]:
-            edge_color = 'purple'
-        elif large_change_current[i]:
-            edge_color = 'red'
-        elif action_changed_current[i]:
-            edge_color = 'black'
+        if pqn:
+            # Determine edge color.
+            if large_change_current[i] and action_changed_current[i]:
+                edge_color = 'purple'
+            elif large_change_current[i]:
+                edge_color = 'red'
+            elif pqn and action_changed_current[i]:
+                edge_color = 'black'
+            else:
+                edge_color = 'none'
         else:
             edge_color = 'none'
         
@@ -260,12 +265,15 @@ def plot_representation_change(
     
     # Plot each previous agent point individually with custom edges.
     for i in range(len(agent_prev_pca)):
-        if large_change_prev[i] and action_changed_prev[i]:
-            edge_color = 'purple'
-        elif large_change_prev[i]:
-            edge_color = 'red'
-        elif action_changed_prev[i]:
-            edge_color = 'black'
+        if pqn:
+            if large_change_prev[i] and action_changed_prev[i]:
+                edge_color = 'purple'
+            elif large_change_prev[i]:
+                edge_color = 'red'
+            elif pqn and action_changed_prev[i]:
+                edge_color = 'black'
+            else:
+                edge_color = 'none'
         else:
             edge_color = 'none'
         
@@ -293,12 +301,12 @@ def plot_representation_change(
         f"{name}/mean_cosine_distance_current": cos_dists_current.mean(),
         f"{name}/var_l2_distance_current": l2_dists_current.var(),
         f"{name}/var_cosine_distance_current": cos_dists_current.var(),
-        f"{name}/policy_churn_current": 100 * np.mean(agent_opt_actions_np != old_agent_opt_actions_np),
+        f"{name}/policy_churn_current": 100 * np.mean(agent_opt_actions_np != old_agent_opt_actions_np) if pqn else 0,
         f"{name}/mean_l2_distance_prev": l2_dists_prev.mean(),
         f"{name}/mean_cosine_distance_prev": cos_dists_prev.mean(),
         f"{name}/var_l2_distance_prev": l2_dists_prev.var(),
         f"{name}/var_cosine_distance_prev": cos_dists_prev.var(),
-        f"{name}/policy_churn_prev": 100 * np.mean(agent_opt_actions_prev != old_agent_opt_actions_prev),
+        f"{name}/policy_churn_prev": 100 * np.mean(agent_opt_actions_prev != old_agent_opt_actions_prev) if pqn else 0,
     }, step=global_step)
 
     plt.close(fig)

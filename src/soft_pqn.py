@@ -5,151 +5,160 @@ os.environ["WANDB__SERVICE_WAIT"] = "300"
 import os
 import random
 import time
-from collections import deque
 import envpool
-
+import math
 import gym
 import numpy as np
 import tensordict
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 import tqdm
 import tyro
 import wandb
+from collections import deque
 from tensordict import from_module
 from tensordict.nn import CudaGraphModule
 from torch.distributions.categorical import Distribution
-
 
 Distribution.set_default_validate_args(False)
 torch.set_float32_matmul_precision("high")
 
 from utils.compute_hns import _compute_hns
 from utils.utils import parse_network_size, find_all_modules, get_act_fn_clss
-from utils.args import PPOArgs
+from utils.args import PQNArgs
+from utils.compute_churn import compute_representation_and_q_churn, compute_ranks_from_features, plot_representation_change
 from utils.wrappers import RecordEpisodeStatistics
-from utils.compute_churn import compute_ppo_metrics, compute_ranks_from_features, plot_representation_change
-from utils.wrappers import RecordEpisodeStatistics
-from models.agent import SharedTrunkPPOAgent, DecoupledPPOAgent
+from models.agent import PQNAgent
 from rl_act import plot_rlact, log_rlact_parameters
+
 from IPython import embed
 
-def gae(next_obs, next_done, container):
-    next_value = get_value(next_obs).reshape(-1)
-    lastgaelam = 0
+def linear_schedule(start_e: float, end_e: float, duration: int, t: int):
+    slope = (end_e - start_e) / duration
+    return max(slope * t + start_e, end_e)
+
+def exponential_schedule(start_e: float, end_e: float, duration: int, t: int):
+    fraction = min(t / duration, 1.0)
+    return start_e * ((end_e / start_e) ** fraction)
+
+def get_alpha():
+    return log_alpha.exp()
+
+def lambda_returns(next_obs, next_done, container):
+    alpha = get_alpha()
+    next_q = policy(next_obs)
+    next_value = alpha * torch.logsumexp(next_q / alpha, dim=1)
     nextnonterminals = (~container["dones"]).float().unbind(0)
     vals = container["vals"]
     vals_unbind = vals.unbind(0)
     rewards = container["rewards"].unbind(0)
-
-    advantages = []
-    nextnonterminal = (~next_done).float()
-    nextvalues = next_value
-    for t in range(args.num_steps - 1, -1, -1):
-        cur_val = vals_unbind[t]
-        delta = rewards[t] + args.gamma * nextvalues * nextnonterminal - cur_val
-        advantages.append(delta + args.gamma * args.gae_lambda * nextnonterminal * lastgaelam)
-        lastgaelam = advantages[-1]
-
-        nextnonterminal = nextnonterminals[t]
-        nextvalues = cur_val
-
-    advantages = container["advantages"] = torch.stack(list(reversed(advantages)))
-    container["returns"] = advantages + vals
+    returns = []
+    returns.append(rewards[-1] + args.gamma * next_value * (~next_done).float())
+    i = 1
+    for t in range(args.num_steps - 2, -1, -1):
+        # Use the stored Q-value from the rollout as the “next” Q-value.
+        next_value = vals_unbind[t+1]
+        returns.append(
+            rewards[t] + args.gamma * (
+                args.q_lambda * returns[i-1] + (1 - args.q_lambda) * next_value
+            ) * nextnonterminals[t+1]
+        )
+        i += 1
+    returns = container["returns"] = torch.stack(list(reversed(returns)))
     return container
-
 
 def rollout(obs, done, avg_returns=[], avg_lengths=[]):
     ts = []
     for step in range(args.num_steps):
-        action, logprob, _, value = policy(obs=obs)
+        q_values = policy(obs)
+        epsilon = linear_schedule(args.start_e, args.end_e, args.exploration_fraction * args.total_timesteps, global_step)
+        explore = (torch.rand((args.num_envs,), device=device) < epsilon)
+        random_actions = torch.randint(0, envs.single_action_space.n, (args.num_envs,), device=device)
+        
+        alpha = get_alpha()
+        policy_probs = F.softmax(q_values / alpha, dim=1)
+        soft_actions = torch.multinomial(policy_probs, num_samples=1).squeeze(1)
+        action = torch.where(explore, random_actions, soft_actions)
+        
+
         next_obs_np, reward, next_done, info = envs.step(action.cpu().numpy())
-        next_obs = torch.as_tensor(next_obs_np)
-        reward = torch.as_tensor(reward)
-        next_done = torch.as_tensor(next_done)
+        next_obs = torch.as_tensor(next_obs_np, device=device)
+        reward = torch.as_tensor(reward, device=device)
+        next_done = torch.as_tensor(next_done, device=device)
 
         idx = next_done
         if idx.any():
             idx = idx & torch.as_tensor(info["lives"] == 0, device=next_done.device, dtype=torch.bool)
             if idx.any():
-                r = torch.as_tensor(info["r"])
-                l = torch.as_tensor(info["l"]).float()
-                avg_returns.extend(r[idx])
-                avg_lengths.extend(l[idx])
+                r = torch.as_tensor(info["r"], device=device)
+                l = torch.as_tensor(info["l"], device=device).float()
+                avg_returns.extend(r[idx].cpu().numpy())
+                avg_lengths.extend(l[idx].cpu().numpy())
 
         ts.append(
             tensordict.TensorDict._new_unsafe(
                 obs=obs,
                 dones=done,
-                vals=value.flatten(),
+                vals=alpha * torch.logsumexp(q_values / alpha, dim=1),
                 actions=action,
-                logprobs=logprob,
                 rewards=reward,
                 batch_size=(args.num_envs,),
             )
         )
 
-        obs = next_obs = next_obs.to(device, non_blocking=True)
-        done = next_done.to(device, non_blocking=True)
+        obs = next_obs  # move to next_obs
+        done = next_done
 
     container = torch.stack(ts, 0).to(device)
     return next_obs, done, container
 
-
-def update(obs, actions, logprobs, advantages, returns, vals):
+def update(obs, actions, returns):
     optimizer.zero_grad()
-    _, newlogprob, entropy, newvalue = agent.get_action_and_value(obs, actions)
-    logratio = newlogprob - logprobs
-    ratio = logratio.exp()
-
-    with torch.no_grad():
-        old_approx_kl = (-logratio).mean()
-        approx_kl = ((ratio - 1) - logratio).mean()
-        clipfrac = ((ratio - 1.0).abs() > args.clip_coef).float().mean()
-
-    if args.norm_adv:
-        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
-
-    # Policy loss
-    pg_loss1 = -advantages * ratio
-    pg_loss2 = -advantages * torch.clamp(ratio, 1 - args.clip_coef, 1 + args.clip_coef)
-    pg_loss = torch.max(pg_loss1, pg_loss2).mean()
-
-    # Value loss
-    newvalue = newvalue.view(-1)
-    if args.clip_vloss:
-        v_loss_unclipped = (newvalue - returns) ** 2
-        v_clipped = vals + torch.clamp(
-            newvalue - vals,
-            -args.clip_coef,
-            args.clip_coef,
-        )
-        v_loss_clipped = (v_clipped - returns) ** 2
-        v_loss_max = torch.max(v_loss_unclipped, v_loss_clipped)
-        v_loss = 0.5 * v_loss_max.mean()
-    else:
-        v_loss = 0.5 * ((newvalue - returns) ** 2).mean()
-
-    entropy_loss = entropy.mean()
-    loss = pg_loss - args.ent_coef * entropy_loss + v_loss * args.vf_coef
-
-    loss.backward()
+    old_representation = agent.get_representation(obs)
+    old_val = agent.get_Q(old_representation)
+    old_val_gathered = old_val.gather(1, actions.unsqueeze(1)).squeeze(1)
+    q_loss = F.mse_loss(old_val_gathered, returns)
+    q_loss.backward()
     gn = nn.utils.clip_grad_norm_(agent.parameters(), args.max_grad_norm)
     optimizer.step()
+    return q_loss.detach(), gn
 
-    return approx_kl, v_loss.detach(), pg_loss.detach(), entropy_loss.detach(), old_approx_kl, clipfrac, gn
-
+def update_alpha(obs, global_step):
+    current_target_entropy = linear_schedule(
+        target_entropy_init, target_entropy_end, args.target_entropy_fraction * args.total_timesteps, global_step
+    )
+    
+    q_values = policy(obs)
+    alpha = get_alpha()
+    policy_probs = F.softmax(q_values / alpha, dim=1)
+    log_policy_probs = F.log_softmax(q_values / alpha, dim=1)
+    entropies = -(policy_probs * log_policy_probs).sum(dim=1)
+    entropy = entropies.mean()
+    
+    alpha_loss = log_alpha * (entropy - current_target_entropy).detach()
+    
+    alpha_optimizer.zero_grad()
+    alpha_loss.backward()
+    alpha_optimizer.step()
+    return alpha_loss.detach(), entropy.detach(), current_target_entropy
 
 update = tensordict.nn.TensorDictModule(
     update,
-    in_keys=["obs", "actions", "logprobs", "advantages", "returns", "vals"],
-    out_keys=["approx_kl", "v_loss", "pg_loss", "entropy_loss", "old_approx_kl", "clipfrac", "gn"],
+    in_keys=["obs", "actions", "returns"],
+    out_keys=["td_loss", "gn"],
+)
+
+update_alpha = tensordict.nn.TensorDictModule(
+    update_alpha,
+    in_keys=["obs", "global_step"],
+    out_keys=["alpha_loss", "entropy", "target_entropy"],
 )
 
 if __name__ == "__main__":
     ####### Argument Parsing #######
-    args = tyro.cli(PPOArgs)
+    args = tyro.cli(PQNArgs)
     batch_size = int(args.num_envs * args.num_steps)
     args.minibatch_size = batch_size // args.num_minibatches
     args.batch_size = args.num_minibatches * args.minibatch_size
@@ -162,9 +171,9 @@ if __name__ == "__main__":
     args.log_iterations_img = np.unique(args.log_iterations_img)
     args.log_iterations_img = np.insert(args.log_iterations_img, 0, 1)
     
-    run_name = f"PPO_ENV:{args.env_id}_CNN:{args.cnn_type}_SIZE:{args.network_size}_LN:{args.use_ln}_ACTFN:{args.activation_fn}_SEED:{args.seed}"
+    run_name = f"SOFTPQN_ENV:{args.env_id}_CNN:{args.cnn_type}_SIZE:{args.network_size}_LN:{args.use_ln}_ACTFN:{args.activation_fn}_SEED:{args.seed}"
     args.run_name = run_name
-
+    
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
@@ -206,38 +215,45 @@ if __name__ == "__main__":
         "trunk_num_layers": trunk_num_layers,
         "device": device,
     }
-    agent_clss = SharedTrunkPPOAgent if args.shared_trunk else DecoupledPPOAgent
-    
-    agent = agent_clss(**agent_cfg)
-    old_agent = agent_clss(**agent_cfg)
+    agent = PQNAgent(**agent_cfg)
+    old_agent = PQNAgent(**agent_cfg)
     print(agent)
     
-    agent_inference = agent_clss(**agent_cfg)
+    agent_inference = PQNAgent(**agent_cfg)
     agent_inference_p = from_module(agent).data
     agent_inference_p.to_module(agent_inference)
+    
+    ###### Temperature fo Soft PQN ######
+    initial_alpha = 1.0
+    num_actions = envs.single_action_space.n
+    target_entropy_init = -args.target_entropy_init_scale * torch.log(1 / torch.tensor(envs.single_action_space.n))
+    target_entropy_end = -args.target_entropy_end_scale * torch.log(1 / torch.tensor(envs.single_action_space.n))
+    print(f"Target Entropy Init: {target_entropy_init}, Target Entropy End: {target_entropy_end}")
+
+    log_alpha = torch.tensor(math.log(initial_alpha), requires_grad=True, device=device)
+    alpha_optimizer = optim.Adam([log_alpha], lr=args.alpha_lr)
 
     ####### Optimizer #######
-    optimizer = optim.Adam(
+    optimizer = optim.RAdam(
         agent.parameters(),
         lr=torch.tensor(args.learning_rate, device=device),
-        eps=1e-5,
         capturable=args.cudagraphs and not args.compile,
     )
 
     ####### Executables #######
-    policy = agent_inference.get_action_and_value
-    get_value = agent_inference.get_value
+    policy = agent_inference.forward
 
-    # Compile policy
     if args.compile:
         mode = None
         policy = torch.compile(policy, mode=mode)
-        gae = torch.compile(gae, fullgraph=True, mode=mode)
+        lambda_returns = torch.compile(lambda_returns, fullgraph=True, mode=mode)
         update = torch.compile(update, mode=mode)
+        update_alpha = torch.compile(update_alpha, mode=mode)
 
     if args.cudagraphs:
         policy = CudaGraphModule(policy)
         update = CudaGraphModule(update)
+        update_alpha = CudaGraphModule(update_alpha)
 
     ####### Training Loop #######
     prev_container = None
@@ -262,30 +278,38 @@ if __name__ == "__main__":
             lrnow = frac * args.learning_rate
             optimizer.param_groups[0]["lr"].copy_(lrnow)
 
-        torch.compiler.cudagraph_mark_step_begin()
-        next_obs, next_done, container = rollout(next_obs, next_done, avg_returns=avg_returns, avg_lengths=avg_lengths)
-        global_step += container.numel()
-
-        container = gae(next_obs, next_done, container)
-        container_flat = container.view(-1)
+        # collect rollout
+        with torch.no_grad():
+            torch.compiler.cudagraph_mark_step_begin()
+            next_obs, next_done, container = rollout(next_obs, next_done, avg_returns=avg_returns, avg_lengths=avg_lengths)
+            global_step += container.numel()
+            
+            # compute lambda returns
+            container = lambda_returns(next_obs, next_done, container)
+            container_flat = container.view(-1)
 
         # update
-        clipfracs = []
-        kls= []
         gns = []
+        policy_entropies = []
+        alpha_losses = []
+        td_losses = []
         old_agent.load_state_dict(agent.state_dict())
         for epoch in range(args.update_epochs):
             b_inds = torch.randperm(container_flat.shape[0], device=device).split(args.minibatch_size)
+            
             for b_idx, b in enumerate(b_inds):
                 container_local = container_flat[b]
-                out = update(container_local, tensordict_out=tensordict.TensorDict())
-                
-                clipfracs.append(out["clipfrac"].cpu().numpy())
-                kls.append(out["approx_kl"].cpu().numpy())
+                # update Q
+                out = update(container_local, tensordict_out=tensordict.TensorDict())                   
                 gns.append(out["gn"].cpu().numpy())
-                if args.target_kl is not None and out["approx_kl"] > args.target_kl:
-                    break
-        
+                td_losses.append(out["td_loss"].cpu().numpy())
+                
+                # update alpha
+                alpha_loss, policy_entropy, current_target_entropy_ = update_alpha(container_local["obs"], global_step)
+                
+                policy_entropies.append(policy_entropy.cpu().numpy())
+                alpha_losses.append(alpha_loss.cpu().numpy())
+
                 # log images
                 if epoch == 0 and b_idx == 0 and global_step_burnin is not None and iteration in args.log_iterations_img and prev_container is not None:
                     # RL_ACT plots
@@ -309,15 +333,15 @@ if __name__ == "__main__":
                     except Exception as e:
                         print(f"Failed to compute learning dynamics plot per batch: {e}")
                         pass
-                    
+                        
                 # log churn stats
                 if epoch == 0 and b_idx == 0 and global_step_burnin is not None and iteration in args.log_iterations:
                     with torch.no_grad():
                         max_to_keep = min(4096, len(container_flat))
                         cntner_churn = container_flat[torch.randperm(len(container_flat))[:max_to_keep]]
-                        metrics = compute_ppo_metrics(agent, container_flat["obs"])
+                        churn_stats = compute_representation_and_q_churn(agent, old_agent, cntner_churn["obs"])
                         try:
-                            ranks = compute_ranks_from_features(agent, container_flat["obs"])
+                            ranks = compute_ranks_from_features(agent, cntner_churn["obs"])
                         except:
                             ranks = {}
                             
@@ -325,7 +349,7 @@ if __name__ == "__main__":
                         _act_clss_fn = get_act_fn_clss(args.activation_fn)
                         all_act_fns = find_all_modules(agent, _act_clss_fn)
                         log_rlact_parameters(all_act_fns, global_step)
-        
+           
         # log images                 
         # learning dynamics change per iteration
         if global_step_burnin is not None and iteration in args.log_iterations_img and prev_container is not None:
@@ -343,24 +367,22 @@ if __name__ == "__main__":
             except Exception as e:
                 print(f"Failed to compute learning dynamics plot per iteration: {e}")
                 pass
-
+        
+        # logging   
         if global_step_burnin is not None and iteration in args.log_iterations:
             cur_time = time.time()
             speed = (global_step - global_step_burnin) / (cur_time - start_time)
             global_step_burnin = global_step
             start_time = cur_time
-
-            r = container["rewards"].mean()
-            r_max = container["rewards"].max()
             avg_returns_t = torch.tensor(avg_returns).mean()
             avg_lengths_t = torch.tensor(avg_lengths).mean()
             pbar.set_description(
                 f"global.step: {global_step: 8d}, "
                 f"sps: {speed: 4.1f} sps, "
                 f"avg.ep.return: {avg_returns_t: 4.2f},"
-                f"avg.ep.length: {avg_lengths_t: 4.2f},"
+                f"avg.ep.length: {avg_lengths_t: 4.2f}"
             )
-
+        
             with torch.no_grad():
                 ep_return = np.array(avg_returns).mean() if len(avg_returns) > 0 else 0
                 ep_length = np.array(avg_lengths).mean() if len(avg_lengths) > 0 else 0
@@ -368,25 +390,25 @@ if __name__ == "__main__":
                     "charts/sps": speed,
                     "charts/episode_return": ep_return,
                     "charts/episode_length": ep_length,
-                    "losses/entropy": out["entropy_loss"].mean(),
-                    "losses/pg_loss": out["pg_loss"].mean(),
-                    "losses/v_loss": out["v_loss"].mean(),
-                    "losses/approx_kl": np.mean(kls),
-                    "losses/clipfrac": np.mean(clipfracs),
                     "charts/hns": _compute_hns(args.env_id, ep_return),
-                    "losses/logprobs": container["logprobs"].mean(),
-                    "losses/advantages": container["advantages"].mean(),
-                    "losses/returns": container["returns"].mean(),
+                    "alpha/alpha": get_alpha().item(),
+                    "alpha/alpha_loss": np.mean(alpha_losses),
+                    "alpha/policy_entropy": np.mean(policy_entropies),
+                    "alpha/target_entropy": current_target_entropy_,
+                    "losses/lambda_returns": container["returns"].mean(),
                     "losses/q_values": container["vals"].mean(),
+                    "losses/td_loss": np.mean(td_losses),
                     "losses/gradient_norm": np.mean(gns),
+                    "schedule/epsilon": linear_schedule(args.start_e, args.end_e, args.exploration_fraction * args.total_timesteps, global_step),
                     "schedule/lr": optimizer.param_groups[0]["lr"],
+                    
                 }
-                logs = {**logs, **metrics, **ranks}
+                logs = {**logs, **churn_stats, **ranks}
 
             wandb.log(
                 {"charts/global_step": global_step, **logs}, step=global_step
             )
-        
+
         # keep old batch for plots
         if iteration % 10 == 0:
             prev_container = container
