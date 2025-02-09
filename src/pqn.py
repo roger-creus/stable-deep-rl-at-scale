@@ -8,7 +8,6 @@ import time
 from collections import deque
 import envpool
 
-# import gymnasium as gym
 import gym
 import numpy as np
 import tensordict
@@ -27,7 +26,7 @@ Distribution.set_default_validate_args(False)
 torch.set_float32_matmul_precision("high")
 
 from utils.compute_hns import _compute_hns
-from utils.utils import parse_cnn_size, parse_mlp_size, find_all_modules, get_act_fn_clss
+from utils.utils import parse_cnn_size, find_all_modules, get_act_fn_clss, parse_mlp_depth, parse_mlp_width
 from utils.args import PQNArgs
 from utils.compute_churn import compute_representation_and_q_churn, compute_ranks_from_features, plot_representation_change
 from utils.wrappers import RecordEpisodeStatistics
@@ -114,10 +113,13 @@ def update(obs, actions, returns):
     layer_grad_norms = {}
     for name, param in agent.named_parameters():
         if param.grad is not None and "weight" in name:
-            layer_grad_norms[name] = param.grad.detach().norm(2)
+            if "cnn" in name:
+                layer_grad_norms[name] = param.grad.detach().abs().mean()
+            else:
+                layer_grad_norms[name] = param.grad.detach().norm(2)
 
     # keep only even indices to discard layer norm
-    clean_grad_norms = {k: v for i, (k, v) in enumerate(layer_grad_norms.items()) if i % 2 == 0}
+    clean_grad_norms = {k: v for i, (k, v) in enumerate(layer_grad_norms.items()) if i % 2 == 0} if args.use_ln else layer_grad_norms
     clean_grad_norms = {k.replace("network.", "").replace(".weight", "").replace(".", "_"): v for k, v in clean_grad_norms.items()}
     clean_grad_norms = {f"{k.split('_')[0]}_{i}": v for i, (k, v) in enumerate(clean_grad_norms.items())}
     c = 0
@@ -142,7 +144,6 @@ update = tensordict.nn.TensorDictModule(
 if __name__ == "__main__":
     ####### Argument Parsing #######
     args = tyro.cli(PQNArgs)
-    assert not (args.mlp_type == "residual" and args.mlp_size == "small"), "Residual MLP with small size is not supported"
     
     batch_size = int(args.num_envs * args.num_steps)
     args.minibatch_size = batch_size // args.num_minibatches
@@ -157,7 +158,7 @@ if __name__ == "__main__":
     args.log_iterations_img = np.insert(args.log_iterations_img, 0, 1)
     
     
-    run_name = f"PQN_ENV:{args.env_id}_CNN:{args.cnn_type}_CNNSIZE:{args.cnn_size}_MLP:{args.mlp_type}_MLPSIZE:{args.mlp_size}_LN:{args.use_ln}_ACTFN:{args.activation_fn}_SEED:{args.seed}"
+    run_name = f"PQN_ENV:{args.env_id}_CNN:{args.cnn_type}_CNN.SIZE:{args.cnn_size}_MLP:{args.mlp_type}_MLP.WIDTH:{args.mlp_width}_MLP.DEPTH:{args.mlp_depth}_LN:{args.use_ln}_ACTFN:{args.activation_fn}_EPOCHS:{args.update_epochs}_SEED:{args.seed}"
     args.run_name = run_name
     
     random.seed(args.seed)
@@ -191,7 +192,8 @@ if __name__ == "__main__":
 
     ####### Agent #######
     cnn_channels = parse_cnn_size(args.cnn_size)
-    trunk_hidden_size, trunk_num_layers = parse_mlp_size(args.mlp_size)
+    trunk_hidden_size = parse_mlp_width(args.mlp_width)
+    trunk_num_layers = parse_mlp_depth(args.mlp_depth)
     agent_cfg = {
         "envs": envs,
         "use_ln": args.use_ln,
@@ -211,11 +213,14 @@ if __name__ == "__main__":
     agent_inference_p = from_module(agent).data
     agent_inference_p.to_module(agent_inference)
 
+
     ####### Optimizer #######
+    # adjust different lr for different layers (bigger lr for the last layer) on different groups
     optimizer = optim.RAdam(
         agent.parameters(),
-        lr=torch.tensor(args.learning_rate, device=device),
         capturable=args.cudagraphs and not args.compile,
+        weight_decay=1e-5,
+        decoupled_weight_decay=True,
     )
 
     ####### Executables #######
@@ -346,7 +351,7 @@ if __name__ == "__main__":
             pbar.set_description(
                 f"global.step: {global_step: 8d}, "
                 f"sps: {speed: 4.1f} sps, "
-                f"avg.ep.return: {avg_returns_t: 4.2f},"
+                f"avg.ep.return: {avg_returns_t: 4.2f}, "
                 f"avg.ep.length: {avg_lengths_t: 4.2f}"
             )
         

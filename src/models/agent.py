@@ -5,7 +5,6 @@ import torch.nn.functional as F
 from torch.distributions import Categorical
 from models.encoder import AtariCNN, ImpalaCNN, ConvSequence
 from models.mlp import MLP, ResidualMLP, ResidualBlock
-from models.transformer import Transformer
 from utils.utils import get_act_fn_clss, find_all_modules
 from IPython import embed
 
@@ -134,12 +133,15 @@ class PQNAgent(nn.Module):
             with torch.no_grad():
                 x = module(x)
                 
-            if isinstance(module, clss_to_hook) or isinstance(module, ConvSequence):
-                if self.use_ln:
-                    layer_shapes[f'cnn_{count}'] = module.normalized_shape
-                else:
-                    layer_shapes[f'cnn_{count}'] = x.shape
-                count += 1
+            if isinstance(module, ConvSequence):
+                layer_shapes[f'cnn_{count}'] = x.shape
+            else:
+                if isinstance(module, clss_to_hook):
+                    if self.use_ln:
+                        layer_shapes[f'cnn_{count}'] = module.normalized_shape
+                    else:
+                        layer_shapes[f'cnn_{count}'] = x.shape
+                    count += 1
 
         x = x.view(x.size(0), -1)
 
@@ -350,12 +352,15 @@ class SharedTrunkPPOAgent(nn.Module):
             with torch.no_grad():
                 x = module(x)
                 
-            if isinstance(module, clss_to_hook) or isinstance(module, ConvSequence):
-                if self.use_ln:
-                    layer_shapes[f'cnn_{count}'] = module.normalized_shape
-                else:
-                    layer_shapes[f'cnn_{count}'] = x.shape
-                count += 1
+            if isinstance(module, ConvSequence):
+                layer_shapes[f'cnn_{count}'] = x.shape
+            else:
+                if isinstance(module, clss_to_hook):
+                    if self.use_ln:
+                        layer_shapes[f'cnn_{count}'] = module.normalized_shape
+                    else:
+                        layer_shapes[f'cnn_{count}'] = x.shape
+                    count += 1
 
         x = x.view(x.size(0), -1)
 
@@ -467,103 +472,3 @@ class DecoupledPPOAgent(nn.Module):
         if action is None:
             action = probs.sample()
         return action, probs.log_prob(action), probs.entropy(), self.critic(obs / 255.0)
-    
-class TransformerPPOAgent(nn.Module):
-    def __init__(
-        self,
-        envs,
-        use_ln=False,
-        activation_fn="relu",
-        cnn_type="atari",
-        cnn_channels=[32, 64, 64],
-        trxl_dim=512,
-        trxl_num_layers=1,
-        trxl_num_heads=8,
-        trxl_positional_encoding="absolute",
-        max_episode_steps=27000,
-        device="cuda"
-    ):
-        super().__init__()
-        act_ = get_act_fn_clss(activation_fn)
-        
-        if cnn_type == "atari":
-            self.network = AtariCNN(
-                cnn_channels=cnn_channels,
-                use_ln=use_ln,
-                activation_fn=activation_fn,
-                device=device
-            )
-        elif cnn_type == "impala":
-            self.network = ImpalaCNN(
-                cnn_channels=cnn_channels,
-                use_ln=use_ln,
-                activation_fn=activation_fn,
-                device=device
-            )
-        else:
-            raise NotImplementedError(f"Unknown cnn_type: {cnn_type}")
-        
-        with torch.no_grad():
-            dummy = envs.single_observation_space.sample()
-            dummy_torch = torch.as_tensor(dummy).unsqueeze(0).float().to(device)
-            dummy = self.network(dummy_torch)
-            dummy_shape = dummy.view(dummy.size(0), -1).shape[1]
-        
-        self.trunk = MLP(
-            input_size=dummy_shape,
-            hidden_size=trxl_dim,
-            output_size=trxl_dim,
-            num_layers=1,
-            activation_fn=activation_fn,
-            use_ln=use_ln,
-            last_act=True,
-            device=device
-        )
-        
-        self.trxl = Transformer(
-            num_layers=trxl_num_layers,
-            dim=trxl_dim,
-            num_heads=trxl_num_heads,
-            max_episode_steps=max_episode_steps,
-            positional_encoding=trxl_positional_encoding,
-            device=device
-        )
-        
-        self.post_trxl = MLP(
-            input_size=trxl_dim,
-            hidden_size=trxl_dim,
-            output_size=trxl_dim,
-            num_layers=1,
-            activation_fn=activation_fn,
-            use_ln=use_ln,
-            last_act=False,
-            device=device
-        )
-        
-        self.actor = nn.Sequential(
-            act_(),
-            layer_init(nn.Linear(trxl_dim, envs.single_action_space.n, device=device), std=0.01)
-        )
-        
-        self.critic = nn.Sequential(
-            act_(),
-            layer_init(nn.Linear(trxl_dim, 1, device=device), std=1)
-        )
-    
-    def get_value(self, x, memory, memory_mask, memory_indices):
-        x = self.network(x / 255.0)
-        x = self.trunk(x)
-        x, _ = self.trxl(x, memory, memory_mask, memory_indices)
-        x = self.post_trxl(x)
-        return self.critic(x)
-    
-    def get_action_and_value(self, obs, memory, memory_mask, memory_indices, action=None):
-        features = self.network(obs / 255.0)
-        features = self.trunk(features)
-        hidden, memory = self.trxl(features, memory, memory_mask, memory_indices)
-        hidden = self.post_trxl(hidden)
-        logits = self.actor(hidden)
-        probs = Categorical(logits=logits)
-        if action is None:
-            action = probs.sample()
-        return action, probs.log_prob(action), probs.entropy(), self.critic(hidden), memory

@@ -23,7 +23,7 @@ class PPOArgs:
     # Algorithm specific arguments
     env_id: str = "Breakout-v5"
     """the id of the environment"""
-    total_timesteps: int = 10000000
+    total_timesteps: int = 50000000
     """total timesteps of the experiments"""
     learning_rate: float = 2.5e-4
     """the learning rate of the optimizer"""
@@ -37,7 +37,7 @@ class PPOArgs:
     """the discount factor gamma"""
     gae_lambda: float = 0.95
     """the lambda for the general advantage estimation"""
-    num_minibatches: int = 8
+    num_minibatches: int = 32
     """the number of mini-batches"""
     update_epochs: int = 3
     """the K epochs to update the policy"""
@@ -65,26 +65,15 @@ class PPOArgs:
     """the type of the MLP"""
     cnn_size: str = "medium" # small, medium, large
     """the size of the network"""
-    mlp_size: str = "medium" # small, medium, large
+    mlp_width: str = "small" # small, medium, large
+    """the size of the network"""
+    mlp_depth: str = "small" # small, medium, large
     """the size of the network"""
     activation_fn: str = "relu"
     """the activation function of the network"""
     shared_trunk: bool = True
     """whether to use a shared trunk agent"""
     
-    # Transformer-XL specific arguments
-    trxl_num_layers: int = 3
-    """the number of transformer layers"""
-    trxl_num_heads: int = 4
-    """the number of heads used in multi-head attention"""
-    trxl_dim: int = 384
-    """the dimension of the transformer"""
-    trxl_memory_length: int = 128
-    """the length of TrXL's sliding memory window"""
-    trxl_positional_encoding: str = "absolute"
-    """the positional encoding type of the transformer, choices: "", "absolute", "learned" """
-    max_episode_steps: int = 27000
-
     # to be filled in runtime
     batch_size: int = 0
     """the batch size (computed in runtime)"""
@@ -120,19 +109,27 @@ class PQNArgs:
     wandb_project_id: str = "atari10-pqn"
     """the wandb project name"""
 
+    # Learning rate schedule
+    learning_rate: float = 2.5e-4
+    """the learning rate of the optimizer"""
+    anneal_lr: bool = False
+    """Toggle learning rate annealing for policy and value networks"""
+    peak_lr: float = 3e-4
+    """the peak learning rate for the learning rate scheduler"""
+    end_lr: float = 1e-5
+    """the end learning rate for the learning rate scheduler"""
+    warmup_fraction: float = 0.1
+    """the fraction of `total_timesteps` it takes from start_lr to peak_lr"""
+
     # Algorithm specific arguments
     env_id: str = "Breakout-v5"
     """the id of the environment"""
-    total_timesteps: int = 10000000
+    total_timesteps: int = 50000000
     """total timesteps of the experiments"""
-    learning_rate: float = 2.5e-4
-    """the learning rate of the optimizer"""
     num_envs: int = 128
     """the number of parallel game environments"""
     num_steps: int = 32
     """the number of steps to run in each environment per policy rollout"""
-    anneal_lr: bool = False
-    """Toggle learning rate annealing for policy and value networks"""
     gamma: float = 0.99
     """the discount factor gamma"""
     num_minibatches: int = 32
@@ -159,7 +156,9 @@ class PQNArgs:
     """the type of the MLP"""
     cnn_size: str = "medium" # small, medium, large
     """the size of the network"""
-    mlp_size: str = "medium" # small, medium, large
+    mlp_width: str = "small" # small, medium, large
+    """the size of the network"""
+    mlp_depth: str = "small" # small, medium, large
     """the size of the network"""
     activation_fn: str = "relu"
     """the activation function of the network"""

@@ -13,15 +13,31 @@ def parse_cnn_size(net_size):
     elif net_size == "large":
         return (64, 128, 128)
     
-def parse_mlp_size(net_size):
-    if net_size not in ["small", "medium", "large"]:
+def parse_mlp_depth(net_size):
+    if net_size not in ["small", "medium", "large", "xlarge"]:
         raise ValueError(f"Unknown network size: {net_size}")
     if net_size == "small":
-        return (512, 1)
+        return 1
     elif net_size == "medium":
-        return (1024, 5)
+        return 3
     elif net_size == "large":
-        return (2048, 10)
+        return 5
+    elif net_size == "xlarge":
+        return 10
+    else:
+        raise ValueError(f"Unknown network size: {net_size}")
+    
+def parse_mlp_width(net_size):
+    if net_size not in ["small", "medium", "large", "xlarge"]:
+        raise ValueError(f"Unknown network size: {net_size}")
+    if net_size == "small":
+        return 512
+    elif net_size == "medium":
+        return 1024
+    elif net_size == "large":
+        return 2048
+    elif net_size == "xlarge":
+        return 4096
     
 def get_act_fn_functional(act_fn):
     if act_fn == "relu":
