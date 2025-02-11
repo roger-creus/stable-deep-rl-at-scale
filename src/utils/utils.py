@@ -4,8 +4,6 @@ import torch.nn.functional as F
 from rl_act import RLAct, Meta_ADARL, Heuristic_ADARL, Smooth_Meta_ADARL
 
 def parse_cnn_size(net_size):
-    if net_size not in ["small", "medium", "large"]:
-        raise ValueError(f"Unknown network size: {net_size}")
     if net_size == "small":
         return (16, 32, 32)
     elif net_size == "medium":
@@ -14,8 +12,6 @@ def parse_cnn_size(net_size):
         return (64, 128, 128)
     
 def parse_mlp_depth(net_size):
-    if net_size not in ["small", "medium", "large", "xlarge"]:
-        raise ValueError(f"Unknown network size: {net_size}")
     if net_size == "small":
         return 1
     elif net_size == "medium":
@@ -28,8 +24,6 @@ def parse_mlp_depth(net_size):
         raise ValueError(f"Unknown network size: {net_size}")
     
 def parse_mlp_width(net_size):
-    if net_size not in ["small", "medium", "large", "xlarge"]:
-        raise ValueError(f"Unknown network size: {net_size}")
     if net_size == "small":
         return 512
     elif net_size == "medium":

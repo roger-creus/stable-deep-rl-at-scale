@@ -31,10 +31,34 @@ from utils.utils import parse_cnn_size, find_all_modules, get_act_fn_clss, parse
 from utils.args import PQNArgs
 from utils.compute_churn import compute_representation_and_q_churn, compute_ranks_from_features, plot_representation_change
 from utils.wrappers import RecordEpisodeStatistics
-from models.agent import PQNAgent
+from models.agent import DistributionalPQNAgent
 from rl_act import plot_rlact, log_rlact_parameters
 
 from IPython import embed
+
+class HLGauss(nn.Module):
+    def __init__(self, v_min: float = -10, v_max: float = 10, num_atoms: int = 51, smoothing_ratio: float = 0.75, device: torch.device = torch.device("cpu")):
+        super().__init__()
+        self.v_min = v_min
+        self.v_max = v_max
+        self.num_atoms = num_atoms
+        self.smoothing_ratio = smoothing_ratio
+        
+        self.support = torch.linspace(
+            v_min, v_max, num_atoms + 1, dtype=torch.float32, device=device
+        )
+        
+    def forward(self, logits: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        return F.cross_entropy(logits, self.transform_to_probs(target))
+    
+    def transform_to_probs(self, target: torch.Tensor) -> torch.Tensor:
+        cdf_evals = torch.special.erf(
+            (self.support - target.unsqueeze(-1))
+            / (torch.sqrt(torch.tensor(2.0)) * self.smoothing_ratio)
+        )
+        z = cdf_evals[..., -1] - cdf_evals[..., 0]
+        bin_probs = cdf_evals[..., 1:] - cdf_evals[..., :-1]
+        return bin_probs / z.unsqueeze(-1)
 
 def linear_schedule(start_e: float, end_e: float, duration: int, t: int):
     slope = (end_e - start_e) / duration
@@ -64,10 +88,13 @@ def lambda_returns(next_obs, next_done, container):
 def rollout(obs, done, avg_returns=[], avg_lengths=[]):
     ts = []
     for step in range(args.num_steps):
-        q_values = policy(obs)
+        _, _pmfs = policy(obs)
+        q_values = torch.sum(_pmfs * agent.atoms, dim=2)
+        max_actions = torch.argmax(q_values, dim=1)
+        max_values = torch.max(q_values, dim=1).values
+        
         epsilon = linear_schedule(args.start_e, args.end_e, args.exploration_fraction * args.total_timesteps, global_step)
         random_actions = torch.randint(0, envs.single_action_space.n, (args.num_envs,), device=device)
-        max_actions = torch.argmax(q_values, dim=1)
         explore = (torch.rand((args.num_envs,), device=device) < epsilon)
         action = torch.where(explore, random_actions, max_actions)
 
@@ -89,7 +116,7 @@ def rollout(obs, done, avg_returns=[], avg_lengths=[]):
             tensordict.TensorDict._new_unsafe(
                 obs=obs,
                 dones=done,
-                vals=q_values[torch.arange(args.num_envs), max_actions].flatten(),
+                vals=max_values,
                 actions=action,
                 rewards=reward,
                 batch_size=(args.num_envs,),
@@ -104,10 +131,11 @@ def rollout(obs, done, avg_returns=[], avg_lengths=[]):
 
 def update(obs, actions, returns):
     optimizer.zero_grad()
-    old_representation = agent.get_representation(obs)
-    old_val = agent.get_Q(old_representation)
-    old_val_gathered = old_val.gather(1, actions.unsqueeze(1)).squeeze(1)
-    q_loss = F.mse_loss(old_val_gathered, returns)
+    logits, _ = agent(obs)
+    batch_size = logits.shape[0]
+    selected_logits = logits[torch.arange(batch_size), actions]
+    
+    q_loss = loss_fn(selected_logits, returns)
     q_loss.backward()
 
     # log gradient norms per layer
@@ -159,7 +187,7 @@ if __name__ == "__main__":
     args.log_iterations_img = np.insert(args.log_iterations_img, 0, 1)
     
     
-    run_name = f"PQN_ENV:{args.env_id}_CNN:{args.cnn_type}_CNN.SIZE:{args.cnn_size}_MLP:{args.mlp_type}_MLP.WIDTH:{args.mlp_width}_MLP.DEPTH:{args.mlp_depth}_LN:{args.use_ln}_ACTFN:{args.activation_fn}_EPOCHS:{args.update_epochs}_SEED:{args.seed}"
+    run_name = f"HLGAUSSPQN_ENV:{args.env_id}_CNN:{args.cnn_type}_CNN.SIZE:{args.cnn_size}_MLP:{args.mlp_type}_MLP.WIDTH:{args.mlp_width}_MLP.DEPTH:{args.mlp_depth}_LN:{args.use_ln}_ACTFN:{args.activation_fn}_EPOCHS:{args.update_epochs}_SEED:{args.seed}"
     args.run_name = run_name
     
     random.seed(args.seed)
@@ -206,11 +234,20 @@ if __name__ == "__main__":
         "trunk_num_layers": trunk_num_layers,
         "device": device,
     }
-    agent = PQNAgent(**agent_cfg)
-    old_agent = PQNAgent(**agent_cfg)
+    agent = DistributionalPQNAgent(**agent_cfg)
+    old_agent = DistributionalPQNAgent(**agent_cfg)
     print(agent)
     
-    agent_inference = PQNAgent(**agent_cfg)
+    # make the loss function
+    loss_fn = HLGauss(
+        v_min=args.v_min,
+        v_max=args.v_max,
+        num_atoms=args.num_atoms,
+        smoothing_ratio=args.smoothing_ratio,
+        device=device
+    )
+    
+    agent_inference = DistributionalPQNAgent(**agent_cfg)
     agent_inference_p = from_module(agent).data
     agent_inference_p.to_module(agent_inference)
 

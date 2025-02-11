@@ -3,8 +3,8 @@ import torch.nn as nn
 import numpy as np
 import torch.nn.functional as F
 from torch.distributions import Categorical
-from models.encoder import AtariCNN, ImpalaCNN, ConvSequence
-from models.mlp import MLP, ResidualMLP, ResidualBlock
+from models.encoder import AtariCNN, ImpalaCNN, ConvSequence, DenseResidualCNN, VisionTransformerEncoder
+from models.mlp import MLP, ResidualMLP, ResidualBlock, MultiSkipResidualMLP
 from utils.utils import get_act_fn_clss, find_all_modules
 from IPython import embed
 
@@ -13,9 +13,7 @@ def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
     torch.nn.init.constant_(layer.bias, bias_const)
     return layer
 
-
-######################################## PQN Agents ########################################
-class PQNAgent(nn.Module):
+class BasePQNAgent(nn.Module):
     def __init__(
         self,
         envs,
@@ -29,12 +27,27 @@ class PQNAgent(nn.Module):
         activation_fn="relu",
         device=None
     ):
+        """
+        Common initialization of the feature extractor (CNN/ViT) and MLP trunk.
+        """
         super().__init__()
-        
+        self.envs = envs
         self.use_ln = use_ln
-        act_ = get_act_fn_clss(activation_fn)
-        mlp_clss = ResidualMLP if mlp_type == "residual" else MLP
+        self.cnn_type = cnn_type
+        self.mlp_type = mlp_type
+        self.device = device
         
+        # Choose the MLP class.
+        if mlp_type == "default":
+            mlp_clss = MLP
+        elif mlp_type == "residual":
+            mlp_clss = ResidualMLP
+        elif mlp_type == "multiskip_residual":
+            mlp_clss = MultiSkipResidualMLP
+        else:
+            raise NotImplementedError(f"Unknown mlp_type: {mlp_type}")
+        
+        # Build the convolutional (or transformer) network.
         if cnn_type == "atari":
             self.network = AtariCNN(
                 cnn_channels=cnn_channels,
@@ -49,80 +62,104 @@ class PQNAgent(nn.Module):
                 activation_fn=activation_fn,
                 device=device
             )
+        elif cnn_type == "dense_residual":
+            self.network = DenseResidualCNN(
+                cnn_channels=cnn_channels,
+                use_ln=use_ln,
+                activation_fn=activation_fn,
+                device=device
+            )
+        elif cnn_type == "vit":
+            self.network = VisionTransformerEncoder(
+                image_size=84,
+                patch_size=14,
+                in_channels=4,
+                activation_fn=activation_fn,
+                emb_dim=trunk_hidden_size,
+                num_heads=8,
+                mlp_ratio=4,
+                dropout=0.0,
+                device=device
+            ).to(device)
         else:
             raise NotImplementedError(f"Unknown cnn_type: {cnn_type}")
         
-        # compute output size of network
+        # Compute the flattened output size of the feature extractor.
         with torch.no_grad():
             dummy = envs.single_observation_space.sample()
             dummy_torch = torch.as_tensor(dummy).unsqueeze(0).float().to(device)
-            dummy = self.network(dummy_torch)
-            dummy_shape = dummy.view(dummy.size(0), -1).shape[1]
-            
+            dummy_features = self.network(dummy_torch)
+            dummy_shape = dummy_features.view(dummy_features.size(0), -1).shape[1]
+        
+        # Build the MLP trunk.
         self.trunk = mlp_clss(
             input_size=dummy_shape,
-            hidden_size=trunk_hidden_size, # will not be used if num_layers=1
+            hidden_size=trunk_hidden_size,
             output_size=trunk_output_size,
             num_layers=trunk_num_layers,
             use_ln=use_ln,
-            last_act=False,
             activation_fn=activation_fn,
-            device=device
+            device=device,
+            last_act=False
         )
         
-        self.q_func = nn.Sequential(
-            act_(),
-            layer_init(nn.Linear(trunk_output_size, envs.single_action_space.n, device=device), std=0.01),
-        )
+        # Save the number of actions.
+        self.action_dim = envs.single_action_space.n
 
-    def forward(self, x):
-        hidden = self.get_representation(x)
-        return self.get_Q(hidden)
-    
     def get_representation(self, x, dead_neurons=False, per_layer=False):
+        """
+        Returns the latent representation after the CNN and MLP trunk.
+        
+        If `dead_neurons` or `per_layer` is True, the intermediate activations are
+        recorded for analysis.
+        """
         x = x / 255.0
+
+        # For certain architectures, simply run through network and trunk.
+        if self.cnn_type in ["dense_residual", "vit"] or self.mlp_type == "multiskip_residual":
+            x = self.network(x)
+            x = x.view(x.size(0), -1)
+            x = self.trunk(x)
+            return x
+
+        # Otherwise, record intermediate activations if requested.
         neurons = []
         count = 0
         clss_to_hook = nn.LayerNorm if self.use_ln else nn.Conv2d
         for module in self.network.cnn.children():
             x = module(x)
             if (dead_neurons or per_layer) and (isinstance(module, clss_to_hook) or isinstance(module, ConvSequence)):
-                neurons.append(
-                    (f'cnn_{count}', F.relu(x.clone()).detach())
-                )
+                neurons.append((f'cnn_{count}', F.relu(x.clone()).detach()))
                 count += 1
-                
+
         count = 0
         clss_to_hook = nn.LayerNorm if self.use_ln else nn.Linear
         for module in self.trunk.net.children():
             x = module(x)
-            if (dead_neurons or per_layer) and isinstance(module, clss_to_hook) or isinstance(module, ResidualBlock):
+            if (dead_neurons or per_layer) and (isinstance(module, clss_to_hook) or isinstance(module, ResidualBlock)):
                 if isinstance(module, ResidualBlock):
                     for sub_module in module.children():
                         if isinstance(sub_module, clss_to_hook):
-                            neurons.append(
-                                (f'mlp_{count}', F.relu(x.clone()).detach())
-                            )
+                            neurons.append((f'mlp_{count}', F.relu(x.clone()).detach()))
                             count += 1
-                else: 
-                    neurons.append(
-                        (f'mlp_{count}', F.relu(x.clone()).detach())
-                    )
+                else:
+                    neurons.append((f'mlp_{count}', F.relu(x.clone()).detach()))
                     count += 1
 
         if per_layer:
-            neurons_dict = {}
-            for layer, ns in neurons:
-                neurons_dict[layer] = ns
+            neurons_dict = {layer: act for layer, act in neurons}
             return x, neurons_dict
 
         if dead_neurons:
-            dead_neurons = self.calculate_dead_neurons(neurons)
-            return x, dead_neurons
-        
+            dead = self.calculate_dead_neurons(neurons)
+            return x, dead
+
         return x
-    
+
     def get_layer_shapes(self):
+        """
+        Returns a dictionary containing the shapes (or dimensions) of each layer's output.
+        """
         layer_shapes = {}
         dummy_input = torch.rand(1, 4, 84, 84).to(next(self.parameters()).device)
         x = dummy_input
@@ -132,7 +169,6 @@ class PQNAgent(nn.Module):
         for module in self.network.cnn.children():
             with torch.no_grad():
                 x = module(x)
-                
             if isinstance(module, ConvSequence):
                 layer_shapes[f'cnn_{count}'] = x.shape
             else:
@@ -165,35 +201,145 @@ class PQNAgent(nn.Module):
                     count += 1
                     
         return layer_shapes
-    
+
     def calculate_dead_neurons(self, neurons):
-        total = {
-            "cnn" : 0,
-            "mlp" : 0
-        }
-        dead = {
-            "cnn" : 0,
-            "mlp" : 0
-        }
+        """
+        Given a list of (layer, activations) tuples, returns the fraction of neurons that
+        are “dead” (i.e. have an average activation ≤ 0) per block.
+        """
+        total = {"cnn": 0, "mlp": 0}
+        dead = {"cnn": 0, "mlp": 0}
         
         for layer, ns in neurons:
             score = ns.mean(dim=0)
             mask = score <= 0.0
             layer_name = layer.split("_")[0]
             total[layer_name] += torch.numel(mask)
-            dead[layer_name] += (mask.sum().item())
+            dead[layer_name] += mask.sum().item()
         
         fraction_dead = {
-            "cnn" : dead["cnn"]/total["cnn"] * 100,
-            "mlp" : dead["mlp"]/total["mlp"] * 100
+            "cnn": dead["cnn"] / total["cnn"] * 100 if total["cnn"] > 0 else 0,
+            "mlp": dead["mlp"] / total["mlp"] * 100 if total["mlp"] > 0 else 0
         }
         return fraction_dead
 
+# ============================================================================
+# Standard PQN Agent
+# ============================================================================
+
+class PQNAgent(BasePQNAgent):
+    def __init__(
+        self,
+        envs,
+        use_ln=True,
+        cnn_type="atari",
+        mlp_type="default",
+        cnn_channels=[32, 64, 64],
+        trunk_hidden_size=512,
+        trunk_output_size=512,
+        trunk_num_layers=1,
+        activation_fn="relu",
+        device=None
+    ):
+        super().__init__(
+            envs,
+            use_ln=use_ln,
+            cnn_type=cnn_type,
+            mlp_type=mlp_type,
+            cnn_channels=cnn_channels,
+            trunk_hidden_size=trunk_hidden_size,
+            trunk_output_size=trunk_output_size,
+            trunk_num_layers=trunk_num_layers,
+            activation_fn=activation_fn,
+            device=device
+        )
+        act_ = get_act_fn_clss(activation_fn)
+        self.q_func = nn.Sequential(
+            act_(),
+            layer_init(nn.Linear(trunk_output_size, self.action_dim, device=device), std=0.01),
+        )
+
+    def forward(self, x):
+        hidden = self.get_representation(x)
+        return self.get_Q(hidden)
+    
     def get_Q(self, hidden):
         return self.q_func(hidden)
         
     def get_max_value(self, x):
         return self.forward(x).max(1)[0]
+    
+# ============================================================================
+# Distributional PQN Agent
+# ============================================================================
+
+class DistributionalPQNAgent(BasePQNAgent):
+    def __init__(
+        self,
+        envs,
+        use_ln=True,
+        cnn_type="atari",
+        mlp_type="default",
+        cnn_channels=[32, 64, 64],
+        trunk_hidden_size=512,
+        trunk_output_size=512,
+        trunk_num_layers=1,
+        activation_fn="relu",
+        device=None,
+        n_atoms=51,
+        v_min=-10,
+        v_max=10,
+    ):
+        super().__init__(
+            envs,
+            use_ln=use_ln,
+            cnn_type=cnn_type,
+            mlp_type=mlp_type,
+            cnn_channels=cnn_channels,
+            trunk_hidden_size=trunk_hidden_size,
+            trunk_output_size=trunk_output_size,
+            trunk_num_layers=trunk_num_layers,
+            activation_fn=activation_fn,
+            device=device
+        )
+        self.n_atoms = n_atoms
+        self.v_min = v_min
+        self.v_max = v_max
+        
+        # Create and register the fixed set of atoms.
+        self.register_buffer("atoms", torch.linspace(v_min, v_max, steps=n_atoms, device=device))
+        act_ = get_act_fn_clss(activation_fn)
+        self.q_func = nn.Sequential(
+            act_(),
+            layer_init(nn.Linear(trunk_output_size, self.action_dim * n_atoms, device=device), std=0.01),
+        )
+
+    def forward(self, x):
+        """
+        Returns a tuple (logits, pmfs) where pmfs is the probability mass function for
+        each action (reshaped as [batch, action_dim, n_atoms]).
+        """
+        hidden = self.get_representation(x)
+        logits = self.q_func(hidden)
+        logits = logits.view(x.size(0), self.action_dim, self.n_atoms)
+        pmfs = F.softmax(logits, dim=2)
+        return logits, pmfs
+
+    def get_max_value(self, x):
+        """
+        Returns the maximum expected Q-value over actions for each observation.
+        """
+        _, pmfs = self.forward(x)
+        q_values = torch.sum(pmfs * self.atoms, dim=2)
+        return torch.max(q_values, dim=1)[0]
+    
+    def get_Q(self, hidden):
+        logits = self.q_func(hidden)
+        logits = logits.view(hidden.size(0), self.action_dim, self.n_atoms)
+        pmfs = F.softmax(logits, dim=2)
+        q_values = torch.sum(pmfs * self.atoms, dim=2)
+        return q_values
+
     
 ######################################## PPO Agents ########################################
 class SharedTrunkPPOAgent(nn.Module):
