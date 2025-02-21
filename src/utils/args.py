@@ -35,7 +35,7 @@ class PQNArgs:
     # Algorithm specific arguments
     env_id: str = "Breakout-v5"
     """the id of the environment"""
-    total_timesteps: int = 50000000
+    total_timesteps: int = 10000000
     """total timesteps of the experiments"""
     num_envs: int = 128
     """the number of parallel game environments"""
@@ -73,6 +73,8 @@ class PQNArgs:
     """the size of the network"""
     activation_fn: str = "relu"
     """the activation function of the network"""
+    optimizer: str = "adam" # adam, kron
+    """the optimizer of the network"""
     
     # Soft PQN Args
     alpha_lr: float = 1e-4
@@ -133,7 +135,7 @@ class PPOArgs:
     # Algorithm specific arguments
     env_id: str = "Breakout-v5"
     """the id of the environment"""
-    total_timesteps: int = 50000000
+    total_timesteps: int = 10000000
     """total timesteps of the experiments"""
     learning_rate: float = 2.5e-4
     """the learning rate of the optimizer"""

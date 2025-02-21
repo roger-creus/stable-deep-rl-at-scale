@@ -27,9 +27,9 @@ torch.set_float32_matmul_precision("high")
 
 from utils.compute_hns import _compute_hns
 from utils.loss_landscape import plot_loss_landscape
-from utils.utils import parse_cnn_size, find_all_modules, get_act_fn_clss, parse_mlp_depth, parse_mlp_width
+from utils.utils import parse_cnn_size, parse_mlp_depth, parse_mlp_width, get_optimizer
 from utils.args import PQNArgs
-from utils.compute_churn import compute_representation_and_q_churn, compute_ranks_from_features, plot_representation_change
+from utils.compute_churn import compute_representation_and_q_churn, compute_ranks_from_features, plot_representation_change, plot_activations_range
 from utils.wrappers import RecordEpisodeStatistics
 from models.agent import PQNAgent
 
@@ -103,13 +103,14 @@ def rollout(obs, done, avg_returns=[], avg_lengths=[]):
 
 def update(obs, actions, returns):
     optimizer.zero_grad()
-    old_representation, per_layer = agent.get_representation(obs, per_layer=True)
+    
+    old_representation, per_layer_representations = agent.get_representation(obs, per_layer=True)
     old_val = agent.get_Q(old_representation)
     old_val_gathered = old_val.gather(1, actions.unsqueeze(1)).squeeze(1)
     q_loss = F.mse_loss(old_val_gathered, returns)
     q_loss.backward()
-
-    # log gradient norms per layer
+    
+    ######### log gradient norms per layer #########
     layer_grad_norms = {}
     for name, param in agent.named_parameters():
         if param.grad is not None and "weight" in name:
@@ -118,9 +119,11 @@ def update(obs, actions, returns):
             else:
                 layer_grad_norms[name] = param.grad.detach().norm(2)
 
-    # keep only even indices to discard layer norm
     clean_grad_norms = {k.replace("network.", "").replace(".weight", "").replace(".", "_"): v for k, v in layer_grad_norms.items()}
-    clean_grad_norms = {k: v for k, v in clean_grad_norms.items() if "ln" not in k}
+    # remove ln layers
+    clean_grad_norms_without_ln = {k: v for k, v in clean_grad_norms.items() if "ln" not in k}
+    if len(clean_grad_norms_without_ln) == len(clean_grad_norms) and args.use_ln:
+        clean_grad_norms = {k: v for i, (k, v) in enumerate(clean_grad_norms.items()) if i % 2 == 0}
     clean_grad_norms = {f"{k.split('_')[0]}_{i}": v for i, (k, v) in enumerate(clean_grad_norms.items())}
     c = 0
     new_clean_grad_norms = {}
@@ -132,15 +135,16 @@ def update(obs, actions, returns):
             new_clean_grad_norms[f"q"] = v
         else:
             new_clean_grad_norms[k] = v
+    ################################################
     
     gn = nn.utils.clip_grad_norm_(agent.parameters(), args.max_grad_norm)
     optimizer.step()
-    return q_loss.detach(), gn, new_clean_grad_norms
+    return q_loss.detach(), gn, new_clean_grad_norms, per_layer_representations
 
 update = tensordict.nn.TensorDictModule(
     update,
     in_keys=["obs", "actions", "returns"],
-    out_keys=["td_loss", "gn", "new_clean_grad_norms"],
+    out_keys=["td_loss", "gn", "new_clean_grad_norms", "per_layer_representations"],
 )
 
 if __name__ == "__main__":
@@ -160,7 +164,7 @@ if __name__ == "__main__":
     args.log_iterations_img = np.insert(args.log_iterations_img, 0, 1)
     
     
-    run_name = f"PQN_ENV:{args.env_id}_CNN:{args.cnn_type}_CNN.SIZE:{args.cnn_size}_MLP:{args.mlp_type}_MLP.WIDTH:{args.mlp_width}_MLP.DEPTH:{args.mlp_depth}_LN:{args.use_ln}_ACTFN:{args.activation_fn}_EPOCHS:{args.update_epochs}_SEED:{args.seed}"
+    run_name = f"PQN_ENV:{args.env_id}_OPTIM:{args.optimizer}_CNN:{args.cnn_type}_CNN.SIZE:{args.cnn_size}_MLP:{args.mlp_type}_MLP.WIDTH:{args.mlp_width}_MLP.DEPTH:{args.mlp_depth}_LN:{args.use_ln}_ACTFN:{args.activation_fn}_EPOCHS:{args.update_epochs}_SEED:{args.seed}"
     args.run_name = run_name
     
     random.seed(args.seed)
@@ -215,14 +219,15 @@ if __name__ == "__main__":
     agent_inference_p = from_module(agent).data
     agent_inference_p.to_module(agent_inference)
 
-
     ####### Optimizer #######
-    # adjust different lr for different layers (bigger lr for the last layer) on different groups
-    optimizer = optim.RAdam(
+    # recommended in https://github.com/evanatyourservice/kron_torch
+    if args.optimizer == "kron":
+        args.learning_rate /= 3.0
+        
+    optimizer_clss = get_optimizer(args.optimizer)
+    optimizer = optimizer_clss(
         agent.parameters(),
-        capturable=args.cudagraphs and not args.compile,
-        weight_decay=1e-5,
-        decoupled_weight_decay=True,
+        lr=args.learning_rate,
     )
 
     ####### Executables #######
@@ -243,6 +248,15 @@ if __name__ == "__main__":
     prev_container = None
     avg_returns = deque(maxlen=20)
     avg_lengths = deque(maxlen=20)
+
+    layer_shapes_ = agent.get_layer_shapes()
+    mu_representations = {
+        k: torch.zeros(v, device=device) for k, v in layer_shapes_.items()
+    }
+    std_representations = {
+        k: torch.ones(v, device=device) for k, v in layer_shapes_.items()
+    }
+    
     global_step = 0
     container_local = None
     next_obs = torch.tensor(envs.reset(), device=device, dtype=torch.uint8)
@@ -281,6 +295,14 @@ if __name__ == "__main__":
                 container_local = container_flat[b]
                 out = update(container_local, tensordict_out=tensordict.TensorDict())                   
                 gns.append(out["gn"].cpu().numpy())
+                
+                # log representation ranges
+                mu_representations = {
+                    k: 0.99 * mu_representations[k] + 0.01 * v.mean(0) for k, v in out["per_layer_representations"].items()
+                }
+                std_representations = {
+                    k: 0.99 * std_representations[k] + 0.01 * v.std(0) for k, v in out["per_layer_representations"].items()
+                }
 
                 # log loss landscape
                 if epoch == 0 and b_idx == 0 and global_step_burnin is not None and iteration in args.log_iterations_img and prev_container is not None:
@@ -321,6 +343,16 @@ if __name__ == "__main__":
                 )
             except Exception as e:
                 print(f"Failed to plot representation change: {e}")
+                
+            # try:
+            #     plot_activations_range(
+            #         mus=mu_representations,
+            #         stds=std_representations,
+            #         global_step=global_step,
+            #         max_neurons=20,
+            #     )
+            # except Exception as e:
+            #     print(f"Failed to plot activations range: {e}")
             
         # logging
         if global_step_burnin is not None and iteration in args.log_iterations:

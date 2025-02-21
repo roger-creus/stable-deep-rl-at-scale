@@ -6,6 +6,7 @@ import umap
 import numpy as np
 from sklearn.decomposition import PCA
 from IPython import embed
+import seaborn as sns
 
 import warnings
 warnings.simplefilter(action='ignore', category=FutureWarning)
@@ -634,3 +635,40 @@ def compute_ranks_from_features(agent, obs):
     out = {**singular_values, **ranks}
     out = {f"ranks/{k}": v for k, v in out.items()}
     return out
+
+def plot_activations_range(mus, stds, global_step, max_neurons=20):
+    cnn_mus = {k: mus[k] for k in mus.keys() if "cnn" in k}
+    cnn_stds = {k: stds[k] for k in stds.keys() if "cnn" in k}
+    mlp_mus = {k: mus[k] for k in mus.keys() if "mlp" in k}
+    mlp_stds = {k: stds[k] for k in stds.keys() if "mlp" in k}
+
+    # Function to plot Gaussians
+    def plot_gaussians(ax, mus, stds, layer_name, max_neurons=20):
+        num_neurons = min(mus.shape[-1], max_neurons)
+        x_range = torch.linspace(mus.min() - 3 * stds.max(), mus.max() + 3 * stds.max(), 100).numpy()
+
+        for i in range(num_neurons):
+            mu, std = mus[0, i].item(), stds[0, i].item()
+            if std > 0:
+                y_vals = np.exp(-0.5 * ((x_range - mu) / std) ** 2) / (std * np.sqrt(2 * np.pi))
+                ax.plot(x_range, y_vals, label=f'Neuron {i}', alpha=0.6)
+
+        ax.set_title(f"Layer: {layer_name}")
+        ax.set_xlabel("Activation")
+        ax.set_ylabel("Density")
+        ax.legend(fontsize=6, loc="upper right", ncol=2)
+
+    # Plot MLP activations
+    num_layers = len(mlp_mus)
+    fig, axes = plt.subplots(num_layers, 1, figsize=(8, 3 * num_layers))
+
+    if num_layers == 1:
+        axes = [axes]  # Ensure iterable even for one layer
+
+    for ax, (layer, mu_tensor) in zip(axes, mlp_mus.items()):
+        std_tensor = mlp_stds[layer]
+        plot_gaussians(ax, mu_tensor, std_tensor, layer, max_neurons)
+
+    plt.suptitle(f"Activation Distributions at Step {global_step}")
+    plt.tight_layout()
+    plt.savefig(f"activation_distributions_{global_step}.png")

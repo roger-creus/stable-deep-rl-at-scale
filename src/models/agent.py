@@ -5,7 +5,7 @@ import torch.nn.functional as F
 from torch.distributions import Categorical
 from models.encoder import AtariCNN, ImpalaCNN, ConvSequence, DenseResidualCNN, VisionTransformerEncoder
 from models.mlp import MLP, ResidualMLP, ResidualBlock, MultiSkipResidualMLP, MultiSkipResidualBlock
-from utils.utils import get_act_fn_clss, find_all_modules
+from utils.utils import get_act_fn_clss
 from IPython import embed
 
 def layer_init(layer, std=np.sqrt(2), bias_const=0.0):

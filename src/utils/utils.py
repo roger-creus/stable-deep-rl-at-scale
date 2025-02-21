@@ -1,7 +1,7 @@
 
 import torch
 import torch.nn.functional as F
-from rl_act import RLAct, Meta_ADARL, Heuristic_ADARL, Smooth_Meta_ADARL
+from kron_torch import Kron
 
 def parse_cnn_size(net_size):
     if net_size == "small":
@@ -69,12 +69,16 @@ def get_act_fn_clss(act_fn):
     else:
         raise ValueError(f"Unknown activation function: {act_fn}")
     
-def find_all_modules(module, module_clss=Meta_ADARL):
-    """Recursively find all instances of Meta_ADARL in the module tree."""
-    meta_modules = []
-    for child in module.children():
-        if isinstance(child, module_clss):
-            meta_modules.append(child)
-        else:
-            meta_modules.extend(find_all_modules(child, module_clss))
-    return meta_modules
+def get_optimizer(optimizer):
+    if optimizer == "adam":
+        return torch.optim.Adam
+    elif optimizer == "radam":
+        return torch.optim.RAdam
+    elif optimizer == "sgd":
+        return torch.optim.SGD
+    elif optimizer == "rmsprop":
+        return torch.optim.RMSprop
+    elif optimizer == "kron":
+        return Kron
+    else:
+        raise ValueError(f"Unknown optimizer: {optimizer}") 

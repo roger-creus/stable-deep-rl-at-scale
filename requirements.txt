@@ -18,3 +18,4 @@ scikit-learn
 opencv-contrib-python-headless
 umap
 umap-learn
+kron-torch
