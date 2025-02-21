@@ -48,14 +48,6 @@ def get_act_fn_functional(act_fn):
         return F.sigmoid
     elif act_fn == "silu":
         return F.silu
-    elif act_fn == "rl_act":
-        return RLAct()
-    elif act_fn == "meta_adarl":
-        return Meta_ADARL()
-    elif act_fn == "smooth_meta_adarl":
-        return Smooth_Meta_ADARL()
-    elif act_fn == "heuristic_adarl":
-        return Heuristic_ADARL()
     else:
         raise ValueError(f"Unknown activation function: {act_fn}")
 
@@ -74,14 +66,6 @@ def get_act_fn_clss(act_fn):
         return torch.nn.Sigmoid
     elif act_fn == "silu":
         return torch.nn.SiLU
-    elif act_fn == "rl_act":
-        return RLAct
-    elif act_fn == "meta_adarl":
-        return Meta_ADARL
-    elif act_fn == "smooth_meta_adarl":
-        return Smooth_Meta_ADARL
-    elif act_fn == "heuristic_adarl":
-        return Heuristic_ADARL
     else:
         raise ValueError(f"Unknown activation function: {act_fn}")
     

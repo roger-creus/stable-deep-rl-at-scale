@@ -32,7 +32,6 @@ from utils.wrappers import RecordEpisodeStatistics
 from utils.compute_churn import compute_ppo_metrics, compute_ranks_from_features, plot_representation_change
 from utils.wrappers import RecordEpisodeStatistics
 from models.agent import SharedTrunkPPOAgent, DecoupledPPOAgent
-from rl_act import plot_rlact, log_rlact_parameters
 
 from IPython import embed
 
@@ -313,30 +312,6 @@ if __name__ == "__main__":
                 if args.target_kl is not None and out["approx_kl"] > args.target_kl:
                     break
         
-                # log images
-                if epoch == 0 and b_idx == 0 and global_step_burnin is not None and iteration in args.log_iterations_img and prev_container is not None:
-                    # RL_ACT plots
-                    if args.activation_fn in ["meta_adarl", "heuristic_adarl", "rl_act", "smooth_meta_adarl"]:
-                        _act_clss_fn = get_act_fn_clss(args.activation_fn)
-                        all_act_fns = find_all_modules(agent, _act_clss_fn)
-                        plot_rlact(all_act_fns, _act_clss_fn, ncols=2, global_step=global_step)
-                        
-                    # learning dynamics change per batch
-                    # try:
-                    #    plot_representation_change(
-                    #        agent,
-                    #        old_agent,
-                    #        container["obs"],
-                    #        prev_container["obs"],
-                    #        D=trunk_hidden_size,
-                    #        global_step=global_step,
-                    #        num_points=300,
-                    #        name="learning_dynamics_change_per_batch",
-                    #    )
-                    # except Exception as e:
-                    #    print(f"Failed to compute learning dynamics plot per batch: {e}")
-                    #    pass
-                    
                 # log churn stats
                 if epoch == 0 and b_idx == 0 and global_step_burnin is not None and iteration in args.log_iterations:
                     with torch.no_grad():
@@ -350,11 +325,6 @@ if __name__ == "__main__":
                             ranks = compute_ranks_from_features(agent, container_flat["obs"])
                         except:
                             ranks = {}
-                            
-                    if args.activation_fn in ["meta_adarl", "heuristic_adarl", "rl_act", "smooth_meta_adarl"]:
-                        _act_clss_fn = get_act_fn_clss(args.activation_fn)
-                        all_act_fns = find_all_modules(agent, _act_clss_fn)
-                        log_rlact_parameters(all_act_fns, global_step)
         
         # log images                 
         # learning dynamics change per iteration

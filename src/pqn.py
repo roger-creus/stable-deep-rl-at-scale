@@ -32,7 +32,6 @@ from utils.args import PQNArgs
 from utils.compute_churn import compute_representation_and_q_churn, compute_ranks_from_features, plot_representation_change
 from utils.wrappers import RecordEpisodeStatistics
 from models.agent import PQNAgent
-from rl_act import plot_rlact, log_rlact_parameters
 
 from IPython import embed
 
@@ -283,13 +282,6 @@ if __name__ == "__main__":
 
                 # log images
                 if epoch == 0 and b_idx == 0 and global_step_burnin is not None and iteration in args.log_iterations_img and prev_container is not None:
-                    
-                    # RL_ACT plots
-                    if args.activation_fn in ["meta_adarl", "heuristic_adarl", "rl_act", "smooth_meta_adarl"]:
-                        _act_clss_fn = get_act_fn_clss(args.activation_fn)
-                        all_act_fns = find_all_modules(agent, _act_clss_fn)
-                        plot_rlact(all_act_fns, _act_clss_fn, ncols=2, global_step=global_step)
-
                     with torch.no_grad():
                         max_to_keep = min(64, len(container_flat))
                         cntner_loss_landscape = container_flat[torch.randperm(len(container_flat))[:max_to_keep]]
@@ -312,12 +304,7 @@ if __name__ == "__main__":
                             ranks = compute_ranks_from_features(agent, cntner_churn["obs"])
                         except:
                             ranks = {}
-                            
-                    if args.activation_fn in ["meta_adarl", "heuristic_adarl", "rl_act", "smooth_meta_adarl"]:
-                        _act_clss_fn = get_act_fn_clss(args.activation_fn)
-                        all_act_fns = find_all_modules(agent, _act_clss_fn)
-                        log_rlact_parameters(all_act_fns, global_step)
-           
+
         # log images                 
         # learning dynamics change per iteration
         if global_step_burnin is not None and iteration in args.log_iterations_img and prev_container is not None:
