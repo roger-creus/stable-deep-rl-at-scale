@@ -136,6 +136,26 @@ class ResidualMLP(nn.Module):
     
     
 ###################### MultiSkip Residual MLP ######################
+class StoreGlobalSkip(nn.Module):
+    def forward(self, x):
+        return (x, x)
+
+class MultiSkipResidualBlock(nn.Module):
+    def __init__(self, hidden_size, use_ln=False, activation_fn="relu", device='cpu'):
+        super().__init__()
+        self.block = ResidualBlock(hidden_size, use_ln=use_ln, activation_fn=activation_fn, device=device)
+        
+    def forward(self, x_tuple):
+        x, global_skip = x_tuple
+        out = self.block(x)
+        out = out + global_skip
+        return (out, global_skip)
+
+class ExtractOutput(nn.Module):
+    def forward(self, x_tuple):
+        x, _ = x_tuple
+        return x
+
 class MultiSkipResidualMLP(nn.Module):
     def __init__(
         self,
@@ -149,42 +169,36 @@ class MultiSkipResidualMLP(nn.Module):
         device='cpu'
     ):
         super().__init__()
-        self.use_ln = use_ln
         act_fn_class = get_act_fn_clss(activation_fn)
-        self.activation = act_fn_class()
+        layers = []
         
-        self.initial = layer_init(nn.Linear(input_size, hidden_size, device=device))
+        # Initial linear layer and optional layer norm.
+        layers.append(layer_init(nn.Linear(input_size, hidden_size, device=device)))
         if use_ln:
-            self.initial_ln = nn.LayerNorm(hidden_size, device=device)
+            layers.append(nn.LayerNorm(hidden_size, device=device))
         
-        self.num_blocks = num_layers
-        self.blocks = nn.ModuleList([
-            ResidualBlock(hidden_size, use_ln=use_ln, activation_fn=activation_fn, device=device)
-            for _ in range(num_layers)
-        ])
+        # Store the output as the global skip.
+        layers.append(StoreGlobalSkip())
         
-        self.final = layer_init(nn.Linear(hidden_size, output_size, device=device))
+        # Append the sequence of multi-skip residual blocks.
+        for _ in range(num_layers):
+            layers.append(MultiSkipResidualBlock(hidden_size, use_ln=use_ln, activation_fn=activation_fn, device=device))
+        
+        # Extract the current output (discarding the global skip from the tuple).
+        layers.append(ExtractOutput())
+        
+        # Final linear layer and optional layer norm/activation.
+        layers.append(layer_init(nn.Linear(hidden_size, output_size, device=device)))
         if use_ln:
-            self.final_ln = nn.LayerNorm(output_size, device=device)
+            layers.append(nn.LayerNorm(output_size, device=device))
+        if last_act:
+            layers.append(act_fn_class())
             
-        self.last_act = act_fn_class() if last_act else None
+        self.net = nn.Sequential(*layers)
         
     def forward(self, x):
-        x = self.initial(x)
-        if self.use_ln:
-            x = self.initial_ln(x)
-        global_skip = x
-        
-        for block in self.blocks:
-            x = block(x)
-            x = x + global_skip
-            
-        x = self.final(x)
-        if self.use_ln:
-            x = self.final_ln(x)
-        if self.last_act is not None:
-            x = self.last_act(x)
-        return x
+        return self.net(x)
+
 
 ####################### DEEP RESIDUAL MLP #######################
 class DenseResidualMLP(nn.Module):

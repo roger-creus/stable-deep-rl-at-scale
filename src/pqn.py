@@ -103,7 +103,7 @@ def rollout(obs, done, avg_returns=[], avg_lengths=[]):
 
 def update(obs, actions, returns):
     optimizer.zero_grad()
-    old_representation = agent.get_representation(obs)
+    old_representation, per_layer = agent.get_representation(obs, per_layer=True)
     old_val = agent.get_Q(old_representation)
     old_val_gathered = old_val.gather(1, actions.unsqueeze(1)).squeeze(1)
     q_loss = F.mse_loss(old_val_gathered, returns)
@@ -119,26 +119,28 @@ def update(obs, actions, returns):
                 layer_grad_norms[name] = param.grad.detach().norm(2)
 
     # keep only even indices to discard layer norm
-    clean_grad_norms = {k: v for i, (k, v) in enumerate(layer_grad_norms.items()) if i % 2 == 0} if args.use_ln else layer_grad_norms
-    clean_grad_norms = {k.replace("network.", "").replace(".weight", "").replace(".", "_"): v for k, v in clean_grad_norms.items()}
+    clean_grad_norms = {k.replace("network.", "").replace(".weight", "").replace(".", "_"): v for k, v in layer_grad_norms.items()}
+    clean_grad_norms = {k: v for k, v in clean_grad_norms.items() if "ln" not in k}
     clean_grad_norms = {f"{k.split('_')[0]}_{i}": v for i, (k, v) in enumerate(clean_grad_norms.items())}
     c = 0
+    new_clean_grad_norms = {}
     for k,v in clean_grad_norms.items():
         if "trunk" in k:
-            clean_grad_norms[f"mlp_{c}"] = v
-            del clean_grad_norms[k]
+            new_clean_grad_norms[f"mlp_{c}"] = v
             c += 1
-            
+        elif "q" in k:
+            new_clean_grad_norms[f"q"] = v
+        else:
+            new_clean_grad_norms[k] = v
+    
     gn = nn.utils.clip_grad_norm_(agent.parameters(), args.max_grad_norm)
     optimizer.step()
-    
-    return q_loss.detach(), gn, clean_grad_norms
-
+    return q_loss.detach(), gn, new_clean_grad_norms
 
 update = tensordict.nn.TensorDictModule(
     update,
     in_keys=["obs", "actions", "returns"],
-    out_keys=["td_loss", "gn", "clean_grad_norms"],
+    out_keys=["td_loss", "gn", "new_clean_grad_norms"],
 )
 
 if __name__ == "__main__":
@@ -280,10 +282,10 @@ if __name__ == "__main__":
                 out = update(container_local, tensordict_out=tensordict.TensorDict())                   
                 gns.append(out["gn"].cpu().numpy())
 
-                # log images
+                # log loss landscape
                 if epoch == 0 and b_idx == 0 and global_step_burnin is not None and iteration in args.log_iterations_img and prev_container is not None:
                     with torch.no_grad():
-                        max_to_keep = min(64, len(container_flat))
+                        max_to_keep = min(512, len(container_flat))
                         cntner_loss_landscape = container_flat[torch.randperm(len(container_flat))[:max_to_keep]]
                         batch_obs = cntner_loss_landscape['obs']
                         batch_actions = cntner_loss_landscape['actions']
@@ -291,13 +293,13 @@ if __name__ == "__main__":
                         plot_loss_landscape(old_agent, batch_obs, batch_actions, batch_returns, grid_range=1.0, num_points=21, global_step=global_step)
                         
                 # log churn stats
-                if epoch == 0 and b_idx == 0 and global_step_burnin is not None and iteration in args.log_iterations and args.cnn_type != "dense_residual" and args.mlp_type != "multiskip_residual" and args.cnn_type != "vit":
+                if epoch == 0 and b_idx == 0 and global_step_burnin is not None and iteration in args.log_iterations:
                     with torch.no_grad():
                         max_to_keep = min(2048, len(container_flat))
                         cntner_churn = container_flat[torch.randperm(len(container_flat))[:max_to_keep]]
                         churn_stats = compute_representation_and_q_churn(agent, old_agent, cntner_churn["obs"])
                         per_layer_grad_norms = {
-                            f"gradient_norms/{k}": v.item() for k, v in out["clean_grad_norms"].items()
+                            f"gradient_norms/{k}": v.item() for k, v in out["new_clean_grad_norms"].items()
                         }
                         
                         try:
@@ -305,8 +307,7 @@ if __name__ == "__main__":
                         except:
                             ranks = {}
 
-        # log images                 
-        # learning dynamics change per iteration
+        # log representation change
         if global_step_burnin is not None and iteration in args.log_iterations_img and prev_container is not None:
             try:
                 plot_representation_change(
@@ -319,10 +320,9 @@ if __name__ == "__main__":
                     name="learning_dynamics_change_per_iteration",
                 )
             except Exception as e:
-                print(f"Failed to compute learning dynamics plot per iteration: {e}")
-                pass
-        
-        # logging   
+                print(f"Failed to plot representation change: {e}")
+            
+        # logging
         if global_step_burnin is not None and iteration in args.log_iterations:
             cur_time = time.time()
             speed = (global_step - global_step_burnin) / (cur_time - start_time)
@@ -353,9 +353,7 @@ if __name__ == "__main__":
                     "schedule/lr": optimizer.param_groups[0]["lr"],
                     
                 }
-                
-                if args.cnn_type != "dense_residual" and args.mlp_type != "multiskip_residual" and args.cnn_type != "vit":
-                    logs = {**logs, **churn_stats, **ranks, **per_layer_grad_norms}
+                logs = {**logs, **churn_stats, **ranks, **per_layer_grad_norms}
 
             wandb.log(
                 {"charts/global_step": global_step, **logs}, step=global_step

@@ -4,7 +4,7 @@ import numpy as np
 import torch.nn.functional as F
 from torch.distributions import Categorical
 from models.encoder import AtariCNN, ImpalaCNN, ConvSequence, DenseResidualCNN, VisionTransformerEncoder
-from models.mlp import MLP, ResidualMLP, ResidualBlock, MultiSkipResidualMLP
+from models.mlp import MLP, ResidualMLP, ResidualBlock, MultiSkipResidualMLP, MultiSkipResidualBlock
 from utils.utils import get_act_fn_clss, find_all_modules
 from IPython import embed
 
@@ -107,99 +107,115 @@ class BasePQNAgent(nn.Module):
         self.action_dim = envs.single_action_space.n
 
     def get_representation(self, x, dead_neurons=False, per_layer=False):
-        """
-        Returns the latent representation after the CNN and MLP trunk.
-        
-        If `dead_neurons` or `per_layer` is True, the intermediate activations are
-        recorded for analysis.
-        """
         x = x / 255.0
-
-        # For certain architectures, simply run through network and trunk.
-        if self.cnn_type in ["dense_residual", "vit"] or self.mlp_type == "multiskip_residual":
-            x = self.network(x)
-            x = x.view(x.size(0), -1)
-            x = self.trunk(x)
-            return x
-
-        # Otherwise, record intermediate activations if requested.
         neurons = []
-        count = 0
-        clss_to_hook = nn.LayerNorm if self.use_ln else nn.Conv2d
-        for module in self.network.cnn.children():
-            x = module(x)
-            if (dead_neurons or per_layer) and (isinstance(module, clss_to_hook) or isinstance(module, ConvSequence)):
-                neurons.append((f'cnn_{count}', F.relu(x.clone()).detach()))
-                count += 1
 
-        count = 0
-        clss_to_hook = nn.LayerNorm if self.use_ln else nn.Linear
-        for module in self.trunk.net.children():
-            x = module(x)
-            if (dead_neurons or per_layer) and (isinstance(module, clss_to_hook) or isinstance(module, ResidualBlock)):
-                if isinstance(module, ResidualBlock):
-                    for sub_module in module.children():
-                        if isinstance(sub_module, clss_to_hook):
-                            neurons.append((f'mlp_{count}', F.relu(x.clone()).detach()))
-                            count += 1
+        def process_modules(modules, x, prefix, hook_cls, additional_cls):
+            count = 0
+            collected = []
+            for module in modules:
+                if isinstance(module, nn.Sequential):
+                    x, c, sub_collected = process_modules(module.children(), x, prefix, hook_cls, additional_cls)
+                    count += c
+                    collected.extend(sub_collected)
                 else:
-                    neurons.append((f'mlp_{count}', F.relu(x.clone()).detach()))
-                    count += 1
+                    x = module(x)
+                    if dead_neurons or per_layer:
+                        if isinstance(module, hook_cls):
+                            collected.append((f'{prefix}_{count}', F.relu(x.clone()).detach()))
+                            count += 1
+                        elif isinstance(module, additional_cls):
+                            for sub_module in module.children():
+                                if isinstance(sub_module, ResidualBlock):
+                                    for sub_sub_module in sub_module.children():
+                                        if isinstance(sub_sub_module, hook_cls):
+                                            if isinstance(x, tuple):
+                                                collected.append((f'{prefix}_{count}', F.relu(x[0].clone()).detach()))
+                                            else:
+                                                collected.append((f'{prefix}_{count}', F.relu(x.clone()).detach()))
+                                            count += 1
+                                else:
+                                    if isinstance(sub_module, hook_cls):
+                                        collected.append((f'{prefix}_{count}', F.relu(x.clone()).detach()))
+                                        count += 1
+            return x, count, collected
+
+        cnn_hook = nn.LayerNorm if self.use_ln else nn.Conv2d
+        cnn_additional = ConvSequence  
+        x, _, cnn_neurons = process_modules(self.network.cnn.children(), x, 'cnn', cnn_hook, cnn_additional)
+        neurons.extend(cnn_neurons)
+
+        x = x.view(x.size(0), -1)
+
+        mlp_hook = nn.LayerNorm if self.use_ln else nn.Linear
+        mlp_additional = (ResidualBlock, MultiSkipResidualBlock)
+        x, _, mlp_neurons = process_modules(self.trunk.net.children(), x, 'mlp', mlp_hook, mlp_additional)
+        neurons.extend(mlp_neurons)
 
         if per_layer:
             neurons_dict = {layer: act for layer, act in neurons}
             return x, neurons_dict
-
         if dead_neurons:
             dead = self.calculate_dead_neurons(neurons)
             return x, dead
-
         return x
 
     def get_layer_shapes(self):
         """
-        Returns a dictionary containing the shapes (or dimensions) of each layer's output.
+        Returns a dictionary containing the shapes (or dimensions) of each layer's output,
+        ensuring consistency with get_representation().
         """
         layer_shapes = {}
-        dummy_input = torch.rand(1, 4, 84, 84).to(next(self.parameters()).device)
-        x = dummy_input
-        count = 0
-        clss_to_hook = nn.LayerNorm if self.use_ln else nn.Conv2d
+        device = next(self.parameters()).device
+        dummy_input = torch.rand(1, 4, 84, 84).to(device)
 
-        for module in self.network.cnn.children():
-            with torch.no_grad():
-                x = module(x)
-            if isinstance(module, ConvSequence):
-                layer_shapes[f'cnn_{count}'] = x.shape
-            else:
-                if isinstance(module, clss_to_hook):
-                    if self.use_ln:
-                        layer_shapes[f'cnn_{count}'] = module.normalized_shape
-                    else:
-                        layer_shapes[f'cnn_{count}'] = x.shape
-                    count += 1
+        def process_modules(modules, x, prefix, hook_cls, additional_cls):
+            count = 0
+            shapes = {}
+            for module in modules:
+                if isinstance(module, nn.Sequential):
+                    x, c, sub_shapes = process_modules(module.children(), x, prefix, hook_cls, additional_cls)
+                    count += c
+                    shapes.update(sub_shapes)
+                else:
+                    with torch.no_grad():
+                        if isinstance(module, MultiSkipResidualBlock) and not isinstance(x, tuple):
+                            x = (x, x)  # Ensure residual blocks get correct input
+                        x = module(x)
 
+                    # Capture only the same layers as in get_representation
+                    if isinstance(module, hook_cls):
+                        shapes[f'{prefix}_{count}'] = x[0].shape if isinstance(x, tuple) else x.shape
+                        count += 1
+                    elif isinstance(module, additional_cls):
+                        for sub_module in module.children():
+                            if isinstance(sub_module, ResidualBlock):
+                                for sub_sub_module in sub_module.children():
+                                    if isinstance(sub_sub_module, hook_cls):
+                                        shapes[f'{prefix}_{count}'] = x[0].shape if isinstance(x, tuple) else x.shape
+                                        count += 1
+                            else:
+                                if isinstance(sub_module, hook_cls):
+                                    shapes[f'{prefix}_{count}'] = x.shape
+                                    count += 1
+
+            return x, count, shapes
+
+        # Process CNN layers
+        cnn_hook = nn.LayerNorm if self.use_ln else nn.Conv2d
+        cnn_additional = ConvSequence
+        x, _, cnn_shapes = process_modules(self.network.cnn.children(), dummy_input, 'cnn', cnn_hook, cnn_additional)
+        layer_shapes.update(cnn_shapes)
+
+        # Flatten before passing to MLP
         x = x.view(x.size(0), -1)
 
-        count = 0
-        clss_to_hook = nn.LayerNorm if self.use_ln else nn.Linear
-        for module in self.trunk.net.children():
-            if isinstance(module, clss_to_hook) or isinstance(module, ResidualBlock):
-                if isinstance(module, ResidualBlock):
-                    for sub_module in module.children():
-                        if isinstance(sub_module, clss_to_hook):
-                            if clss_to_hook == nn.LayerNorm:
-                                layer_shapes[f'mlp_{count}'] = sub_module.normalized_shape
-                            else:
-                                layer_shapes[f'mlp_{count}'] = sub_module.weight.shape[0]
-                            count += 1
-                else:
-                    if clss_to_hook == nn.LayerNorm:
-                        layer_shapes[f'mlp_{count}'] = module.normalized_shape
-                    else:
-                        layer_shapes[f'mlp_{count}'] = module.weight.shape[0]
-                    count += 1
-                    
+        # Process MLP layers
+        mlp_hook = nn.LayerNorm if self.use_ln else nn.Linear
+        mlp_additional = (ResidualBlock, MultiSkipResidualBlock)
+        x, _, mlp_shapes = process_modules(self.trunk.net.children(), x, 'mlp', mlp_hook, mlp_additional)
+        layer_shapes.update(mlp_shapes)
+
         return layer_shapes
 
     def calculate_dead_neurons(self, neurons):

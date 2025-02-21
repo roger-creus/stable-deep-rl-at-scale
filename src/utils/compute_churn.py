@@ -435,7 +435,6 @@ def plot_visitation_distribution(
     plt.tight_layout()
     wandb.log({"learning_dynamics/visitation_distribution": wandb.Image(fig)}, step=global_step)
     plt.close(fig)
-
     
 @torch.no_grad()
 def compute_representation_and_q_churn(agent, old_agent, obs):
