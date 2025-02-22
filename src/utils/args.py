@@ -11,9 +11,7 @@ class PQNArgs:
     """if toggled, `torch.backends.cudnn.deterministic=False`"""
     cuda: bool = True
     """if toggled, cuda will be enabled by default"""
-    capture_video: bool = False
-    """whether to capture videos of the agent performances (check out `videos` folder)"""
-    num_logs: int = 1000
+    num_logs: int = 50
     """Number of logs to save."""
     num_img_logs: int = 10
     """Number of image logs to save."""
@@ -25,12 +23,6 @@ class PQNArgs:
     """the learning rate of the optimizer"""
     anneal_lr: bool = False
     """Toggle learning rate annealing for policy and value networks"""
-    peak_lr: float = 3e-4
-    """the peak learning rate for the learning rate scheduler"""
-    end_lr: float = 1e-5
-    """the end learning rate for the learning rate scheduler"""
-    warmup_fraction: float = 0.1
-    """the fraction of `total_timesteps` it takes from start_lr to peak_lr"""
 
     # Algorithm specific arguments
     env_id: str = "Breakout-v5"
@@ -123,9 +115,7 @@ class PPOArgs:
     """if toggled, `torch.backends.cudnn.deterministic=False`"""
     cuda: bool = True
     """if toggled, cuda will be enabled by default"""
-    capture_video: bool = False
-    """whether to capture videos of the agent performances (check out `videos` folder)"""
-    num_logs: int = 1000
+    num_logs: int = 50
     """Number of logs to save."""
     num_img_logs: int = 10
     """Number of image logs to save."""
@@ -139,9 +129,9 @@ class PPOArgs:
     """total timesteps of the experiments"""
     learning_rate: float = 2.5e-4
     """the learning rate of the optimizer"""
-    num_envs: int = 128
+    num_envs: int = 64
     """the number of parallel game environments"""
-    num_steps: int = 64
+    num_steps: int = 128
     """the number of steps to run in each environment per policy rollout"""
     anneal_lr: bool = True
     """Toggle learning rate annealing for policy and value networks"""
@@ -149,13 +139,13 @@ class PPOArgs:
     """the discount factor gamma"""
     gae_lambda: float = 0.95
     """the lambda for the general advantage estimation"""
-    num_minibatches: int = 32
+    num_minibatches: int = 8
     """the number of mini-batches"""
-    update_epochs: int = 3
+    update_epochs: int = 4
     """the K epochs to update the policy"""
     norm_adv: bool = True
     """Toggles advantages normalization"""
-    clip_coef: float = 0.1
+    clip_coef: float = 0.15
     """the surrogate clipping coefficient"""
     clip_vloss: bool = True
     """Toggles whether or not to use a clipped loss for the value function, as per the paper."""
@@ -183,6 +173,8 @@ class PPOArgs:
     """the size of the network"""
     activation_fn: str = "relu"
     """the activation function of the network"""
+    optimizer: str = "adam" # adam, kron
+    """the optimizer of the network"""
     shared_trunk: bool = True
     """whether to use a shared trunk agent"""
     

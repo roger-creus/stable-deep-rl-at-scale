@@ -120,7 +120,6 @@ def update(obs, actions, returns):
                 layer_grad_norms[name] = param.grad.detach().norm(2)
 
     clean_grad_norms = {k.replace("network.", "").replace(".weight", "").replace(".", "_"): v for k, v in layer_grad_norms.items()}
-    # remove ln layers
     clean_grad_norms_without_ln = {k: v for k, v in clean_grad_norms.items() if "ln" not in k}
     if len(clean_grad_norms_without_ln) == len(clean_grad_norms) and args.use_ln:
         clean_grad_norms = {k: v for i, (k, v) in enumerate(clean_grad_norms.items()) if i % 2 == 0}
@@ -274,7 +273,7 @@ if __name__ == "__main__":
         if args.anneal_lr:
             frac = 1.0 - (iteration - 1.0) / args.num_iterations
             lrnow = frac * args.learning_rate
-            optimizer.param_groups[0]["lr"].copy_(lrnow)
+            optimizer.param_groups[0]["lr"] = lrnow
 
         # collect rollout
         torch.compiler.cudagraph_mark_step_begin()

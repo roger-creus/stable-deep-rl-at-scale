@@ -6,7 +6,6 @@ import umap
 import numpy as np
 from sklearn.decomposition import PCA
 from IPython import embed
-import seaborn as sns
 
 import warnings
 warnings.simplefilter(action='ignore', category=FutureWarning)

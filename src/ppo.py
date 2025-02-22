@@ -26,7 +26,7 @@ Distribution.set_default_validate_args(False)
 torch.set_float32_matmul_precision("high")
 
 from utils.compute_hns import _compute_hns
-from utils.utils import parse_cnn_size, find_all_modules, get_act_fn_clss, parse_mlp_depth, parse_mlp_width
+from utils.utils import parse_cnn_size, parse_mlp_depth, parse_mlp_width, get_optimizer
 from utils.args import PPOArgs
 from utils.wrappers import RecordEpisodeStatistics
 from utils.compute_churn import compute_ppo_metrics, compute_ranks_from_features, plot_representation_change
@@ -135,7 +135,7 @@ def update(obs, actions, logprobs, advantages, returns, vals):
 
     loss.backward()
     
-    # log gradient norms per layer
+    ######### log gradient norms per layer #########
     layer_grad_norms = {}
     for name, param in agent.named_parameters():
         if param.grad is not None and "weight" in name:
@@ -144,26 +144,34 @@ def update(obs, actions, logprobs, advantages, returns, vals):
             else:
                 layer_grad_norms[name] = param.grad.detach().norm(2)
 
-    # keep only even indices to discard layer norm
-    clean_grad_norms = {k: v for i, (k, v) in enumerate(layer_grad_norms.items()) if i % 2 == 0} if args.use_ln else layer_grad_norms
-    clean_grad_norms = {k.replace("network.", "").replace(".weight", "").replace(".", "_"): v for k, v in clean_grad_norms.items()}
+    clean_grad_norms = {k.replace("network.", "").replace(".weight", "").replace(".", "_"): v for k, v in layer_grad_norms.items()}
+    clean_grad_norms_without_ln = {k: v for k, v in clean_grad_norms.items() if "ln" not in k}
+    if len(clean_grad_norms_without_ln) == len(clean_grad_norms) and args.use_ln:
+        clean_grad_norms = {k: v for i, (k, v) in enumerate(clean_grad_norms.items()) if i % 2 == 0}
     clean_grad_norms = {f"{k.split('_')[0]}_{i}": v for i, (k, v) in enumerate(clean_grad_norms.items())}
     c = 0
+    new_clean_grad_norms = {}
     for k,v in clean_grad_norms.items():
         if "trunk" in k:
-            clean_grad_norms[f"mlp_{c}"] = v
-            del clean_grad_norms[k]
+            new_clean_grad_norms[f"mlp_{c}"] = v
             c += 1
+        elif "actor" in k:
+            new_clean_grad_norms[f"actor"] = v
+        elif "critic" in k:
+            new_clean_grad_norms[f"critic"] = v
+        else:
+            new_clean_grad_norms[k] = v
+    ################################################
     
     gn = nn.utils.clip_grad_norm_(agent.parameters(), args.max_grad_norm)
     optimizer.step()
 
-    return approx_kl, v_loss.detach(), pg_loss.detach(), entropy_loss.detach(), old_approx_kl, clipfrac, gn, clean_grad_norms
+    return approx_kl, v_loss.detach(), pg_loss.detach(), entropy_loss.detach(), old_approx_kl, clipfrac, gn, new_clean_grad_norms
 
 update = tensordict.nn.TensorDictModule(
     update,
     in_keys=["obs", "actions", "logprobs", "advantages", "returns", "vals"],
-    out_keys=["approx_kl", "v_loss", "pg_loss", "entropy_loss", "old_approx_kl", "clipfrac", "gn", "clean_grad_norms"],
+    out_keys=["approx_kl", "v_loss", "pg_loss", "entropy_loss", "old_approx_kl", "clipfrac", "gn", "new_clean_grad_norms"],
 )
 
 if __name__ == "__main__":
@@ -179,11 +187,14 @@ if __name__ == "__main__":
     args.log_iterations = np.linspace(0, args.num_iterations, num=args.num_logs, endpoint=False, dtype=int)
     args.log_iterations = np.unique(args.log_iterations)
     args.log_iterations = np.insert(args.log_iterations, 0, 1)
+    print(f"Will log {len(args.log_iterations)} times")
+    
     args.log_iterations_img = np.linspace(0, args.num_iterations, num=args.num_img_logs, endpoint=False, dtype=int)
     args.log_iterations_img = np.unique(args.log_iterations_img)
     args.log_iterations_img = np.insert(args.log_iterations_img, 0, 1)
+    print(f"Will log images {len(args.log_iterations_img)} times")
     
-    run_name = f"PPO_ENV:{args.env_id}_CNN:{args.cnn_type}_CNN.SIZE:{args.cnn_size}_MLP:{args.mlp_type}_MLP.WIDTH:{args.mlp_width}_MLP.DEPTH:{args.mlp_depth}_LN:{args.use_ln}_ACTFN:{args.activation_fn}_EPOCHS:{args.update_epochs}_SEED:{args.seed}"
+    run_name = f"PPO_ENV:{args.env_id}_OPTIM:{args.optimizer}_CNN:{args.cnn_type}_CNN.SIZE:{args.cnn_size}_MLP:{args.mlp_type}_MLP.WIDTH:{args.mlp_width}_MLP.DEPTH:{args.mlp_depth}_LN:{args.use_ln}_ACTFN:{args.activation_fn}_EPOCHS:{args.update_epochs}_SEED:{args.seed}"
     args.run_name = run_name
 
     random.seed(args.seed)
@@ -241,11 +252,17 @@ if __name__ == "__main__":
     agent_inference_p.to_module(agent_inference)
 
     ####### Optimizer #######
-    optimizer = optim.Adam(
+    # recommended in https://github.com/evanatyourservice/kron_torch
+    if args.optimizer == "kron":
+        args.learning_rate /= 3.0
+        
+    optimizer_clss = get_optimizer(args.optimizer)
+    optim_kwargs = {"eps": 1.0e-5} if "adam" in args.optimizer else {}
+    
+    optimizer = optimizer_clss(
         agent.parameters(),
-        lr=torch.tensor(args.learning_rate, device=device),
-        eps=1e-5,
-        capturable=args.cudagraphs and not args.compile,
+        lr=args.learning_rate,
+        **optim_kwargs,
     )
 
     ####### Executables #######
@@ -284,7 +301,7 @@ if __name__ == "__main__":
         if args.anneal_lr:
             frac = 1.0 - (iteration - 1.0) / args.num_iterations
             lrnow = frac * args.learning_rate
-            optimizer.param_groups[0]["lr"].copy_(lrnow)
+            optimizer.param_groups[0]["lr"] = lrnow
 
         # collect rollout
         torch.compiler.cudagraph_mark_step_begin()
@@ -319,7 +336,7 @@ if __name__ == "__main__":
                         cntner_churn = container_flat[torch.randperm(len(container_flat))[:max_to_keep]]
                         metrics = compute_ppo_metrics(agent, container_flat["obs"])
                         per_layer_grad_norms = {
-                            f"gradient_norms/{k}": v.item() for k, v in out["clean_grad_norms"].items()
+                            f"gradient_norms/{k}": v.item() for k, v in out["new_clean_grad_norms"].items()
                         }
                         try:
                             ranks = compute_ranks_from_features(agent, container_flat["obs"])
