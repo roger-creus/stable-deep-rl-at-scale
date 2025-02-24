@@ -26,9 +26,10 @@ Distribution.set_default_validate_args(False)
 torch.set_float32_matmul_precision("high")
 
 from utils.compute_hns import _compute_hns
-from utils.utils import parse_network_size, find_all_modules, get_act_fn_clss
+from utils.loss_landscape import plot_loss_landscape
+from utils.utils import parse_cnn_size, parse_mlp_depth, parse_mlp_width, get_optimizer
 from utils.args import PQNArgs
-from utils.compute_churn import compute_representation_and_q_churn, compute_ranks_from_features, plot_representation_change
+from utils.compute_churn import compute_representation_and_q_churn, compute_ranks_from_features, plot_representation_change, plot_activations_range
 from utils.wrappers import RecordEpisodeStatistics
 from models.agent import PQNAgent
 
@@ -38,17 +39,11 @@ def linear_schedule(start_e: float, end_e: float, duration: int, t: int):
     slope = (end_e - start_e) / duration
     return max(slope * t + start_e, end_e)
 
-def exponential_schedule(start_e: float, end_e: float, duration: int, t: int):
-    fraction = min(t / duration, 1.0)
-    return start_e * ((end_e / start_e) ** fraction)
-
 def get_alpha():
     return log_alpha.exp()
 
-def lambda_returns(next_obs, next_done, container):
-    alpha = get_alpha()
-    next_q = policy(next_obs)
-    next_value = alpha * torch.logsumexp(next_q / alpha, dim=1)
+def lambda_returns(next_obs, next_done, container, alpha):
+    next_value = get_softmax_value(next_obs, alpha)
     nextnonterminals = (~container["dones"]).float().unbind(0)
     vals = container["vals"]
     vals_unbind = vals.unbind(0)
@@ -57,7 +52,6 @@ def lambda_returns(next_obs, next_done, container):
     returns.append(rewards[-1] + args.gamma * next_value * (~next_done).float())
     i = 1
     for t in range(args.num_steps - 2, -1, -1):
-        # Use the stored Q-value from the rollout as the “next” Q-value.
         next_value = vals_unbind[t+1]
         returns.append(
             rewards[t] + args.gamma * (
@@ -81,7 +75,6 @@ def rollout(obs, done, avg_returns=[], avg_lengths=[]):
         soft_actions = torch.multinomial(policy_probs, num_samples=1).squeeze(1)
         action = torch.where(explore, random_actions, soft_actions)
         
-
         next_obs_np, reward, next_done, info = envs.step(action.cpu().numpy())
         next_obs = torch.as_tensor(next_obs_np, device=device)
         reward = torch.as_tensor(reward, device=device)
@@ -107,7 +100,7 @@ def rollout(obs, done, avg_returns=[], avg_lengths=[]):
             )
         )
 
-        obs = next_obs  # move to next_obs
+        obs = next_obs
         done = next_done
 
     container = torch.stack(ts, 0).to(device)
@@ -115,22 +108,56 @@ def rollout(obs, done, avg_returns=[], avg_lengths=[]):
 
 def update(obs, actions, returns):
     optimizer.zero_grad()
-    old_representation = agent.get_representation(obs)
+    
+    old_representation, per_layer_representations = agent.get_representation(obs, per_layer=True)
     old_val = agent.get_Q(old_representation)
     old_val_gathered = old_val.gather(1, actions.unsqueeze(1)).squeeze(1)
     q_loss = F.mse_loss(old_val_gathered, returns)
     q_loss.backward()
+    
+    ######### log gradient norms per layer #########
+    layer_grad_norms = {}
+    for name, param in agent.named_parameters():
+        if param.grad is not None and "weight" in name:
+            if "cnn" in name:
+                layer_grad_norms[name] = param.grad.detach().abs().mean()
+            else:
+                layer_grad_norms[name] = param.grad.detach().norm(2)
+
+    clean_grad_norms = {k.replace("network.", "").replace(".weight", "").replace(".", "_"): v for k, v in layer_grad_norms.items()}
+    clean_grad_norms_without_ln = {k: v for k, v in clean_grad_norms.items() if "ln" not in k}
+    if len(clean_grad_norms_without_ln) == len(clean_grad_norms) and args.use_ln:
+        clean_grad_norms = {k: v for i, (k, v) in enumerate(clean_grad_norms.items()) if i % 2 == 0}
+    clean_grad_norms = {f"{k.split('_')[0]}_{i}": v for i, (k, v) in enumerate(clean_grad_norms.items())}
+    c = 0
+    new_clean_grad_norms = {}
+    for k,v in clean_grad_norms.items():
+        if "trunk" in k:
+            new_clean_grad_norms[f"mlp_{c}"] = v
+            c += 1
+        elif "q" in k:
+            new_clean_grad_norms[f"q"] = v
+        else:
+            new_clean_grad_norms[k] = v
+    ################################################
+    
     gn = nn.utils.clip_grad_norm_(agent.parameters(), args.max_grad_norm)
     optimizer.step()
-    return q_loss.detach(), gn
+    return q_loss.detach(), gn, new_clean_grad_norms, per_layer_representations
+
+update = tensordict.nn.TensorDictModule(
+    update,
+    in_keys=["obs", "actions", "returns"],
+    out_keys=["td_loss", "gn", "new_clean_grad_norms", "per_layer_representations"],
+)
 
 def update_alpha(obs, global_step):
     current_target_entropy = linear_schedule(
         target_entropy_init, target_entropy_end, args.target_entropy_fraction * args.total_timesteps, global_step
     )
     
-    q_values = policy(obs)
     alpha = get_alpha()
+    q_values = policy(obs)
     policy_probs = F.softmax(q_values / alpha, dim=1)
     log_policy_probs = F.log_softmax(q_values / alpha, dim=1)
     entropies = -(policy_probs * log_policy_probs).sum(dim=1)
@@ -146,7 +173,7 @@ def update_alpha(obs, global_step):
 update = tensordict.nn.TensorDictModule(
     update,
     in_keys=["obs", "actions", "returns"],
-    out_keys=["td_loss", "gn"],
+    out_keys=["td_loss", "gn", "new_clean_grad_norms", "per_layer_representations"],
 )
 
 update_alpha = tensordict.nn.TensorDictModule(
@@ -170,7 +197,7 @@ if __name__ == "__main__":
     args.log_iterations_img = np.unique(args.log_iterations_img)
     args.log_iterations_img = np.insert(args.log_iterations_img, 0, 1)
     
-    run_name = f"SOFTPQN_ENV:{args.env_id}_CNN:{args.cnn_type}_SIZE:{args.network_size}_LN:{args.use_ln}_ACTFN:{args.activation_fn}_SEED:{args.seed}"
+    run_name = f"SOFTPQN_ENV:{args.env_id}_OPTIM:{args.optimizer}_CNN:{args.cnn_type}_CNN.SIZE:{args.cnn_size}_MLP:{args.mlp_type}_MLP.WIDTH:{args.mlp_width}_MLP.DEPTH:{args.mlp_depth}_LN:{args.use_ln}_ACTFN:{args.activation_fn}_EPOCHS:{args.update_epochs}_SEED:{args.seed}"
     args.run_name = run_name
     
     random.seed(args.seed)
@@ -203,17 +230,21 @@ if __name__ == "__main__":
     assert isinstance(envs.action_space, gym.spaces.Discrete), "only discrete action space is supported"
 
     ####### Agent #######
-    cnn_channels, trunk_hidden_size, trunk_num_layers = parse_network_size(args.network_size)
+    cnn_channels = parse_cnn_size(args.cnn_size)
+    trunk_hidden_size = parse_mlp_width(args.mlp_width)
+    trunk_num_layers = parse_mlp_depth(args.mlp_depth)
     agent_cfg = {
         "envs": envs,
         "use_ln": args.use_ln,
         "activation_fn": args.activation_fn,
         "cnn_type": args.cnn_type,
         "cnn_channels": cnn_channels,
+        "mlp_type": args.mlp_type,
         "trunk_hidden_size": trunk_hidden_size,
         "trunk_num_layers": trunk_num_layers,
         "device": device,
     }
+    
     agent = PQNAgent(**agent_cfg)
     old_agent = PQNAgent(**agent_cfg)
     print(agent)
@@ -233,15 +264,20 @@ if __name__ == "__main__":
     alpha_optimizer = optim.Adam([log_alpha], lr=args.alpha_lr)
 
     ####### Optimizer #######
-    optimizer = optim.RAdam(
+    # recommended in https://github.com/evanatyourservice/kron_torch
+    if args.optimizer == "kron":
+        args.learning_rate /= 3.0
+        
+    optimizer_clss = get_optimizer(args.optimizer)
+    optimizer = optimizer_clss(
         agent.parameters(),
-        lr=torch.tensor(args.learning_rate, device=device),
-        capturable=args.cudagraphs and not args.compile,
+        lr=args.learning_rate,
     )
 
     ####### Executables #######
     policy = agent_inference.forward
-
+    get_softmax_value = agent_inference.get_softmax_value
+    
     if args.compile:
         mode = None
         policy = torch.compile(policy, mode=mode)
@@ -252,12 +288,20 @@ if __name__ == "__main__":
     if args.cudagraphs:
         policy = CudaGraphModule(policy)
         update = CudaGraphModule(update)
-        update_alpha = CudaGraphModule(update_alpha)
 
     ####### Training Loop #######
     prev_container = None
     avg_returns = deque(maxlen=20)
     avg_lengths = deque(maxlen=20)
+    
+    layer_shapes_ = agent.get_layer_shapes()
+    mu_representations = {
+        k: torch.zeros(v, device=device) for k, v in layer_shapes_.items()
+    }
+    std_representations = {
+        k: torch.ones(v, device=device) for k, v in layer_shapes_.items()
+    }
+    
     global_step = 0
     container_local = None
     next_obs = torch.tensor(envs.reset(), device=device, dtype=torch.uint8)
@@ -275,7 +319,7 @@ if __name__ == "__main__":
         if args.anneal_lr:
             frac = 1.0 - (iteration - 1.0) / args.num_iterations
             lrnow = frac * args.learning_rate
-            optimizer.param_groups[0]["lr"].copy_(lrnow)
+            optimizer.param_groups[0]["lr"] = lrnow
 
         # collect rollout
         with torch.no_grad():
@@ -284,7 +328,8 @@ if __name__ == "__main__":
             global_step += container.numel()
             
             # compute lambda returns
-            container = lambda_returns(next_obs, next_done, container)
+            alpha = torch.as_tensor(get_alpha(), device=device)
+            container = lambda_returns(next_obs, next_done, container, alpha)
             container_flat = container.view(-1)
 
         # update
@@ -304,43 +349,37 @@ if __name__ == "__main__":
                 td_losses.append(out["td_loss"].cpu().numpy())
                 
                 # update alpha
-                alpha_loss, policy_entropy, current_target_entropy_ = update_alpha(container_local["obs"], global_step)
+                alpha_loss, policy_entropy, current_target_entropy_ = update_alpha(container_local["obs"], torch.as_tensor(global_step, device=device))
                 
                 policy_entropies.append(policy_entropy.cpu().numpy())
                 alpha_losses.append(alpha_loss.cpu().numpy())
 
-                # log images
+                # log loss landscape
                 if epoch == 0 and b_idx == 0 and global_step_burnin is not None and iteration in args.log_iterations_img and prev_container is not None:
-                  
-                    # learning dynamics change per batch
-                    try:
-                        plot_representation_change(
-                            agent,
-                            old_agent,
-                            container["obs"],
-                            prev_container["obs"],
-                            D=trunk_hidden_size,
-                            global_step=global_step,
-                            num_points=300,
-                            name="learning_dynamics_change_per_batch",
-                        )
-                    except Exception as e:
-                        print(f"Failed to compute learning dynamics plot per batch: {e}")
-                        pass
+                    with torch.no_grad():
+                        max_to_keep = min(512, len(container_flat))
+                        cntner_loss_landscape = container_flat[torch.randperm(len(container_flat))[:max_to_keep]]
+                        batch_obs = cntner_loss_landscape['obs']
+                        batch_actions = cntner_loss_landscape['actions']
+                        batch_returns = cntner_loss_landscape['returns']
+                        plot_loss_landscape(old_agent, batch_obs, batch_actions, batch_returns, grid_range=1.0, num_points=21, global_step=global_step)
                         
                 # log churn stats
                 if epoch == 0 and b_idx == 0 and global_step_burnin is not None and iteration in args.log_iterations:
                     with torch.no_grad():
-                        max_to_keep = min(4096, len(container_flat))
+                        max_to_keep = min(2048, len(container_flat))
                         cntner_churn = container_flat[torch.randperm(len(container_flat))[:max_to_keep]]
                         churn_stats = compute_representation_and_q_churn(agent, old_agent, cntner_churn["obs"])
+                        per_layer_grad_norms = {
+                            f"gradient_norms/{k}": v.item() for k, v in out["new_clean_grad_norms"].items()
+                        }
+                        
                         try:
                             ranks = compute_ranks_from_features(agent, cntner_churn["obs"])
                         except:
                             ranks = {}
                             
-        # log images                 
-        # learning dynamics change per iteration
+        # log representation change
         if global_step_burnin is not None and iteration in args.log_iterations_img and prev_container is not None:
             try:
                 plot_representation_change(
@@ -348,14 +387,12 @@ if __name__ == "__main__":
                     old_agent,
                     container["obs"],
                     prev_container["obs"],
-                    D=trunk_hidden_size,
                     global_step=global_step,
                     num_points=300,
                     name="learning_dynamics_change_per_iteration",
                 )
             except Exception as e:
-                print(f"Failed to compute learning dynamics plot per iteration: {e}")
-                pass
+                print(f"Failed to plot representation change: {e}")
         
         # logging   
         if global_step_burnin is not None and iteration in args.log_iterations:
@@ -392,7 +429,7 @@ if __name__ == "__main__":
                     "schedule/lr": optimizer.param_groups[0]["lr"],
                     
                 }
-                logs = {**logs, **churn_stats, **ranks}
+                logs = {**logs, **churn_stats, **ranks, **per_layer_grad_norms}
 
             wandb.log(
                 {"charts/global_step": global_step, **logs}, step=global_step

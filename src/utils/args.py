@@ -65,7 +65,7 @@ class PQNArgs:
     """the size of the network"""
     activation_fn: str = "relu"
     """the activation function of the network"""
-    optimizer: str = "adam" # adam, kron
+    optimizer: str = "radam" # adam, radam, kron
     """the optimizer of the network"""
     
     # Soft PQN Args
@@ -73,7 +73,7 @@ class PQNArgs:
     """the learning rate of the alpha parameter"""
     target_entropy_init_scale: float = 0.98
     """the maximum target entropy ratio"""
-    target_entropy_end_scale: float = 0.05
+    target_entropy_end_scale: float = 0.15
     """the minimum target entropy ratio"""
     target_entropy_fraction: float = 0.8
     """the fraction of `total_timesteps` it takes from start to end"""
@@ -173,7 +173,7 @@ class PPOArgs:
     """the size of the network"""
     activation_fn: str = "relu"
     """the activation function of the network"""
-    optimizer: str = "adam" # adam, kron
+    optimizer: str = "radam" # adam, radam, kron
     """the optimizer of the network"""
     shared_trunk: bool = True
     """whether to use a shared trunk agent"""

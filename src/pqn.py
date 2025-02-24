@@ -71,9 +71,9 @@ def rollout(obs, done, avg_returns=[], avg_lengths=[]):
         action = torch.where(explore, random_actions, max_actions)
 
         next_obs_np, reward, next_done, info = envs.step(action.cpu().numpy())
-        next_obs = torch.as_tensor(next_obs_np)
-        reward = torch.as_tensor(reward)
-        next_done = torch.as_tensor(next_done)
+        next_obs = torch.as_tensor(next_obs_np, device=device)
+        reward = torch.as_tensor(reward, device=device)
+        next_done = torch.as_tensor(next_done, device=device)
 
         idx = next_done
         if idx.any():
@@ -95,8 +95,8 @@ def rollout(obs, done, avg_returns=[], avg_lengths=[]):
             )
         )
 
-        obs = next_obs = next_obs.to(device, non_blocking=True)
-        done = next_done.to(device, non_blocking=True)
+        obs = next_obs
+        done = next_done
 
     container = torch.stack(ts, 0).to(device)
     return next_obs, done, container
@@ -161,7 +161,6 @@ if __name__ == "__main__":
     args.log_iterations_img = np.linspace(0, args.num_iterations, num=args.num_img_logs, dtype=int)
     args.log_iterations_img = np.unique(args.log_iterations_img)
     args.log_iterations_img = np.insert(args.log_iterations_img, 0, 1)
-    
     
     run_name = f"PQN_ENV:{args.env_id}_OPTIM:{args.optimizer}_CNN:{args.cnn_type}_CNN.SIZE:{args.cnn_size}_MLP:{args.mlp_type}_MLP.WIDTH:{args.mlp_width}_MLP.DEPTH:{args.mlp_depth}_LN:{args.use_ln}_ACTFN:{args.activation_fn}_EPOCHS:{args.update_epochs}_SEED:{args.seed}"
     args.run_name = run_name

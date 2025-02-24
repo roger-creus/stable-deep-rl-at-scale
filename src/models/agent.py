@@ -286,6 +286,11 @@ class PQNAgent(BasePQNAgent):
     def get_max_value(self, x):
         return self.forward(x).max(1)[0]
     
+    def get_softmax_value(self, x, alpha=1.0):
+        q_values = self.forward(x)
+        q_values = alpha * torch.logsumexp(q_values / alpha, dim=1)
+        return q_values
+    
 # ============================================================================
 # Distributional PQN Agent
 # ============================================================================
