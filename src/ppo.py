@@ -177,7 +177,6 @@ update = tensordict.nn.TensorDictModule(
 if __name__ == "__main__":
     ####### Argument Parsing #######
     args = tyro.cli(PPOArgs)
-    assert not (args.mlp_type == "residual" and args.mlp_size == "small"), "Residual MLP with small size is not supported"
     
     batch_size = int(args.num_envs * args.num_steps)
     args.minibatch_size = batch_size // args.num_minibatches
