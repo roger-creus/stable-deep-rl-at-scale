@@ -21,6 +21,8 @@ class MLP(nn.Module):
         device='cpu'
     ):
         super(MLP, self).__init__()
+        self.output_size = output_size
+        
         mlp = []
         act_ = get_act_fn_clss(activation_fn)
         
@@ -113,6 +115,7 @@ class ResidualMLP(nn.Module):
         device='cpu'
     ):
         super().__init__()
+        self.output_size = output_size
         act_fn_class = get_act_fn_clss(activation_fn)
         layers = []
         
@@ -169,6 +172,7 @@ class MultiSkipResidualMLP(nn.Module):
         device='cpu'
     ):
         super().__init__()
+        self.output_size = output_size
         act_fn_class = get_act_fn_clss(activation_fn)
         layers = []
         
@@ -198,47 +202,3 @@ class MultiSkipResidualMLP(nn.Module):
         
     def forward(self, x):
         return self.net(x)
-
-
-####################### DEEP RESIDUAL MLP #######################
-class DenseResidualMLP(nn.Module):
-    def __init__(
-        self,
-        input_size,
-        hidden_size,
-        output_size,
-        num_layers,
-        activation_fn='relu',
-        use_ln=False,
-        device='cpu'
-    ):
-        super().__init__()
-        act_ = get_act_fn_clss(activation_fn)
-        self.activation = act_()
-        self.num_layers = num_layers
-        self.use_ln = use_ln
-
-        self.layers = nn.ModuleList()
-        if use_ln:
-            self.norms = nn.ModuleList()
-
-        current_dim = input_size
-        for i in range(num_layers):
-            layer = nn.Linear(current_dim, hidden_size, device=device)
-            self.layers.append(layer)
-            if use_ln:
-                self.norms.append(nn.LayerNorm(hidden_size, device=device))
-            current_dim += hidden_size
-        self.final_proj = nn.Linear(current_dim, output_size, device=device)
-        
-    def forward(self, x):
-        outputs = [x]
-        for i, layer in enumerate(self.layers):
-            x_cat = torch.cat(outputs, dim=1)
-            out = layer(x_cat)
-            if self.use_ln:
-                out = self.norms[i](out)
-            out = self.activation(out)
-            outputs.append(out)
-        x_cat = torch.cat(outputs, dim=1)
-        return self.final_proj(x_cat)

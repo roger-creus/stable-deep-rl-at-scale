@@ -147,8 +147,8 @@ def update(obs, actions, logprobs, advantages, returns, vals):
     clean_grad_norms = {k.replace("network.", "").replace(".weight", "").replace(".", "_"): v for k, v in layer_grad_norms.items()}
     clean_grad_norms_without_ln = {k: v for k, v in clean_grad_norms.items() if "ln" not in k}
     if len(clean_grad_norms_without_ln) == len(clean_grad_norms) and args.use_ln:
-        clean_grad_norms = {k: v for i, (k, v) in enumerate(clean_grad_norms.items()) if i % 2 == 0}
-    clean_grad_norms = {f"{k.split('_')[0]}_{i}": v for i, (k, v) in enumerate(clean_grad_norms.items())}
+        clean_grad_norms_without_ln = {k: v for i, (k, v) in enumerate(clean_grad_norms.items()) if i % 2 == 0}
+    clean_grad_norms = {f"{k.split('_')[0]}_{i}": v for i, (k, v) in enumerate(clean_grad_norms_without_ln.items())}
     c = 0
     new_clean_grad_norms = {}
     for k,v in clean_grad_norms.items():
@@ -228,7 +228,7 @@ if __name__ == "__main__":
     ####### Agent #######
     cnn_channels = parse_cnn_size(args.cnn_size)
     trunk_hidden_size = parse_mlp_width(args.mlp_width)
-    trunk_num_layers = parse_mlp_depth(args.mlp_depth)
+    trunk_num_layers = parse_mlp_depth(args.mlp_depth, args.mlp_type)
     agent_cfg = {
         "envs": envs,
         "use_ln": args.use_ln,

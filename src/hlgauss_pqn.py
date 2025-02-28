@@ -220,7 +220,7 @@ if __name__ == "__main__":
     ####### Agent #######
     cnn_channels = parse_cnn_size(args.cnn_size)
     trunk_hidden_size = parse_mlp_width(args.mlp_width)
-    trunk_num_layers = parse_mlp_depth(args.mlp_depth)
+    trunk_num_layers = parse_mlp_depth(args.mlp_depth, args.mlp_type)
     agent_cfg = {
         "envs": envs,
         "use_ln": args.use_ln,

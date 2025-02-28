@@ -2,12 +2,15 @@ slurm_templates/*
 batch_jobs/*
 wandb/*
 plots/*
+cifar10*
 
 cluster_config.json
 run_config.json
 xgenius_commands.sh
 RUN_GRADIENT_FLOW_EXPS.sh
 submit_job.sh
+run_cifar10.sh
+run_gn_exps.sh
 
 *.sif
 *.pyc

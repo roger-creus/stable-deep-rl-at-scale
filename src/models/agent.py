@@ -3,7 +3,7 @@ import torch.nn as nn
 import numpy as np
 import torch.nn.functional as F
 from torch.distributions import Categorical
-from models.encoder import AtariCNN, ImpalaCNN, ConvSequence, DenseResidualCNN, VisionTransformerEncoder
+from models.encoder import AtariCNN, ImpalaCNN, ConvSequence
 from models.mlp import MLP, ResidualMLP, ResidualBlock, MultiSkipResidualMLP, MultiSkipResidualBlock
 from utils.utils import get_act_fn_clss, get_act_fn_functional
 from IPython import embed
@@ -70,18 +70,6 @@ class BasePQNAgent(nn.Module):
                 activation_fn=activation_fn,
                 device=device
             )
-        elif cnn_type == "vit":
-            self.network = VisionTransformerEncoder(
-                image_size=84,
-                patch_size=14,
-                in_channels=4,
-                activation_fn=activation_fn,
-                emb_dim=trunk_hidden_size,
-                num_heads=8,
-                mlp_ratio=4,
-                dropout=0.0,
-                device=device
-            ).to(device)
         else:
             raise NotImplementedError(f"Unknown cnn_type: {cnn_type}")
         

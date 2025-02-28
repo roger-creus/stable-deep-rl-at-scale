@@ -76,10 +76,10 @@ def rollout(obs, done, avg_returns=[], avg_lengths=[]):
         action = torch.where(explore, random_actions, soft_actions)
         
         next_obs_np, reward, next_done, info = envs.step(action.cpu().numpy())
-        next_obs = torch.as_tensor(next_obs_np, device=device)
-        reward = torch.as_tensor(reward, device=device)
-        next_done = torch.as_tensor(next_done, device=device)
-
+        next_obs = torch.as_tensor(next_obs_np)
+        reward = torch.as_tensor(reward)
+        next_done = torch.as_tensor(next_done)
+        
         idx = next_done
         if idx.any():
             idx = idx & torch.as_tensor(info["lives"] == 0, device=next_done.device, dtype=torch.bool)
@@ -100,8 +100,8 @@ def rollout(obs, done, avg_returns=[], avg_lengths=[]):
             )
         )
 
-        obs = next_obs
-        done = next_done
+        obs = next_obs = next_obs.to(device, non_blocking=True)
+        done = next_done.to(device, non_blocking=True)
 
     container = torch.stack(ts, 0).to(device)
     return next_obs, done, container
@@ -232,7 +232,7 @@ if __name__ == "__main__":
     ####### Agent #######
     cnn_channels = parse_cnn_size(args.cnn_size)
     trunk_hidden_size = parse_mlp_width(args.mlp_width)
-    trunk_num_layers = parse_mlp_depth(args.mlp_depth)
+    trunk_num_layers = parse_mlp_depth(args.mlp_depth, args.mlp_type)
     agent_cfg = {
         "envs": envs,
         "use_ln": args.use_ln,
