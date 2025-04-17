@@ -57,13 +57,15 @@ class MLP(nn.Module):
                     act_()
                 )
             elif i == num_layers - 1:
-                if use_ln:
+                if last_act and use_ln:
                     mlp.append(
                         nn.LayerNorm(output_size, device=device)
                     )
-                
-                if last_act:
+                elif last_act:
                     mlp.append(act_())
+                        
+                    
+                   
             
         self.net = nn.Sequential(*mlp)
         

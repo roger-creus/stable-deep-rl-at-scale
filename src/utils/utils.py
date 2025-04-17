@@ -1,6 +1,7 @@
 
 import torch
 import torch.nn.functional as F
+import torch.nn as nn
 from kron_torch import Kron
 from IPython import embed
 
@@ -108,6 +109,51 @@ def clean_grad_stats(grad_stats, use_ln=True):
         else:
             new_clean[k] = v
     return new_clean
+
+def get_weight_norms(agent, use_ln=True):
+    layer_weight_norms = {}
+    for name, param in agent.named_parameters():
+        if "weight" in name:
+            # skip layernorms
+            if len(param.shape) == 1:
+                continue
+            weight_flat = param.detach().view(-1)
+            weight_norm = weight_flat.norm().item()
+            layer_weight_norms[name] = weight_norm
+    return clean_grad_stats(layer_weight_norms, use_ln)
+
+def get_dormant_neurons(agent, images_batch, use_ln=True):
+    dormant_neurons = {}
+    activations = {}
+
+    def hook_fn(name):
+        def hook(module, input, output):
+            activations[name] = output.detach()
+        return hook
+    
+    hooks = []
+    for name, module in agent.named_modules():
+        if isinstance(module, nn.ReLU):
+            hooks.append(module.register_forward_hook(hook_fn(name)))
+    
+    with torch.no_grad():
+        agent(images_batch)
+    
+    for name, activation in activations.items():
+        if len(activation.shape) == 4:  # Conv layer: [batch, channels, height, width]
+            reshaped = activation.permute(1, 0, 2, 3).reshape(activation.shape[1], -1)
+            dormant_count = (reshaped.max(dim=1)[0] <= 0).sum().item()
+            dormant_neurons[name] = dormant_count / activation.shape[1]
+        elif len(activation.shape) == 2:  # Linear layer: [batch, features]
+            reshaped = activation.t()  # [features, batch]
+            dormant_count = (reshaped.max(dim=1)[0] <= 0).sum().item()
+            dormant_neurons[name] = dormant_count / activation.shape[1]
+    
+    for hook in hooks:
+        hook.remove()
+    
+    return clean_grad_stats(dormant_neurons, use_ln)
+
 
 def get_grad_norms(agent, use_ln=True):
     layer_grad_norms = {}

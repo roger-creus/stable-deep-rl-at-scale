@@ -4,12 +4,14 @@ wandb/*
 plots/*
 cifar10*
 
+regression_results/*
 cluster_config.json
 run_config.json
 xgenius_commands.sh
 RUN_GRADIENT_FLOW_EXPS.sh
 submit_job.sh
-run_cifar10.sh
+run_cifar.sh
+run_regression.sh
 run_gn_exps.sh
 
 *.sif

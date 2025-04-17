@@ -198,12 +198,15 @@ if __name__ == "__main__":
     # recommended in https://github.com/evanatyourservice/kron_torch
     if args.optimizer == "kron":
         args.learning_rate /= 3.0
+        opt_kwargs = {}
+    elif "adam" in args.optimizer:
+        opt_kwargs = {"capturable": args.cudagraphs and not args.compile}
         
     optimizer_clss = get_optimizer(args.optimizer)
     optimizer = optimizer_clss(
         agent.parameters(),
         lr=torch.tensor(args.learning_rate, device=device),
-        capturable=args.cudagraphs and not args.compile,
+        **opt_kwargs,
     )
 
     ####### Executables #######
