@@ -2,6 +2,8 @@ slurm_templates/*
 batch_jobs/*
 wandb/*
 plots/*
+old/*
+runs/*
 cifar10*
 
 regression_results/*
@@ -13,6 +15,7 @@ submit_job.sh
 run_cifar.sh
 run_regression.sh
 run_gn_exps.sh
+run_pqn_targets.sh
 
 *.sif
 *.pyc

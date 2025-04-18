@@ -63,13 +63,6 @@ class BasePQNAgent(nn.Module):
                 activation_fn=activation_fn,
                 device=device
             )
-        elif cnn_type == "dense_residual":
-            self.network = DenseResidualCNN(
-                cnn_channels=cnn_channels,
-                use_ln=use_ln,
-                activation_fn=activation_fn,
-                device=device
-            )
         else:
             raise NotImplementedError(f"Unknown cnn_type: {cnn_type}")
         
