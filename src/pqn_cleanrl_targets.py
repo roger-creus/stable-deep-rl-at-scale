@@ -71,6 +71,13 @@ class Args:
     """the soft update coefficient for target networks"""
     target_network_type: str = "full"
     """which parts to use target networks for: 'full', 'representation', or 'qhead'"""
+    
+    mlp_type: str = "default"
+    """the type of MLP to use: 'default', 'residual', or 'multiskip'"""
+    num_layers: int = 1
+    """the number of layers in the MLP"""
+    hidden_dim: int = 512
+    """the dimension of the hidden layers in the MLP"""
 
     # to be filled in runtime
     batch_size: int = 0
@@ -121,10 +128,26 @@ def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
     return layer
 
 
-class QNetwork(nn.Module):
-    def __init__(self, env):
+class ResidualBlock(nn.Module):
+    def __init__(self, input_dim, hidden_dim):
         super().__init__()
-        self.network = nn.Sequential(
+        self.linear1 = layer_init(nn.Linear(input_dim, hidden_dim))
+        self.ln1 = nn.LayerNorm(hidden_dim)
+        self.linear2 = layer_init(nn.Linear(hidden_dim, hidden_dim))
+        self.ln2 = nn.LayerNorm(hidden_dim)
+        
+    def forward(self, x):
+        residual = x
+        x = F.relu(self.ln1(self.linear1(x)))
+        x = self.ln2(self.linear2(x))
+        x = x + residual
+        return F.relu(x)
+
+class QNetwork(nn.Module):
+    def __init__(self, env, num_layers=1, hidden_dim=512, mlp_type="default"):
+        super().__init__()
+        
+        conv_layers = [
             layer_init(nn.Conv2d(4, 32, 8, stride=4)),
             nn.LayerNorm([32, 20, 20]),
             nn.ReLU(),
@@ -134,22 +157,119 @@ class QNetwork(nn.Module):
             layer_init(nn.Conv2d(64, 64, 3, stride=1)),
             nn.LayerNorm([64, 7, 7]),
             nn.ReLU(),
-            nn.Flatten(),
-            layer_init(nn.Linear(3136, 512)),
-            nn.LayerNorm(512),
-            nn.ReLU(),
-            layer_init(nn.Linear(512, env.single_action_space.n)),
-        )
+            nn.Flatten()
+        ]
         
-        # Split the network into representation and q-head for target network flexibility
-        self.representation = nn.Sequential(*list(self.network.children())[:-1])  # All layers except the last
-        self.q_head = list(self.network.children())[-1]  # Only the last layer
+        self.conv_net = nn.Sequential(*conv_layers)
+        input_dim = 3136
+        
+        # Build the MLP part based on the specified type
+        if mlp_type == "default":
+            # Standard fully connected layers
+            linear_layers = []
+            for i in range(num_layers):
+                linear_layers.append(layer_init(nn.Linear(input_dim, hidden_dim)))
+                linear_layers.append(nn.LayerNorm(hidden_dim))
+                linear_layers.append(nn.ReLU())
+                input_dim = hidden_dim
+            
+            self.mlp = nn.Sequential(*linear_layers)
+            
+        elif mlp_type == "residual":
+            # Residual blocks (2 linears with a skip connection)
+            linear_layers = []
+            # First layer to match dimensions if needed
+            if input_dim != hidden_dim:
+                linear_layers.append(layer_init(nn.Linear(input_dim, hidden_dim)))
+                linear_layers.append(nn.LayerNorm(hidden_dim))
+                linear_layers.append(nn.ReLU())
+                input_dim = hidden_dim
+            
+            # Add residual blocks
+            for i in range(num_layers):
+                linear_layers.append(ResidualBlock(hidden_dim, hidden_dim))
+            
+            self.mlp = nn.Sequential(*linear_layers)
+            
+        elif mlp_type == "multiskip":
+            # Multiskip residual, with every layer passed to every subsequent layer
+            self.mlp = nn.ModuleList()
+            
+            # First layer to match dimensions
+            self.first_layer = None
+            if input_dim != hidden_dim:
+                self.first_layer = nn.Sequential(
+                    layer_init(nn.Linear(input_dim, hidden_dim)),
+                    nn.LayerNorm(hidden_dim),
+                    nn.ReLU()
+                )
+                input_dim = hidden_dim
+            
+            # Create layers for multiskip architecture
+            for i in range(num_layers):
+                self.mlp.append(nn.Sequential(
+                    layer_init(nn.Linear(hidden_dim, hidden_dim)),
+                    nn.LayerNorm(hidden_dim),
+                ))
+        else:
+            raise ValueError(f"Unknown mlp_type: {mlp_type}")
+        
+        # Q-head for action values
+        self.q_head = layer_init(nn.Linear(hidden_dim, env.single_action_space.n))
         
     def forward(self, x):
-        return self.network(x / 255.0)
+        x = self.conv_net(x / 255.0)
+        
+        # Process through MLP based on type
+        if isinstance(self.mlp, nn.Sequential):
+            # For default and residual types
+            x = self.mlp(x)
+        elif isinstance(self.mlp, nn.ModuleList):
+            # For multiskip type
+            if self.first_layer is not None:
+                x = self.first_layer(x)
+            
+            # Store all intermediate outputs
+            layer_outputs = [x]
+            
+            for i, layer in enumerate(self.mlp):
+                # Combine all previous outputs
+                combined_input = sum(layer_outputs)
+                layer_output = layer(combined_input)
+                # Add activation and store for next layers
+                activated_output = F.relu(layer_output)
+                layer_outputs.append(activated_output)
+            
+            # Final output is the last layer's output
+            x = layer_outputs[-1]
+        
+        return self.q_head(x)
     
     def get_representation(self, x):
-        return self.representation(x / 255.0)
+        x = self.conv_net(x / 255.0)
+        
+        # Process through MLP based on type
+        if isinstance(self.mlp, nn.Sequential):
+            # For default and residual types
+            return self.mlp(x)
+        elif isinstance(self.mlp, nn.ModuleList):
+            # For multiskip type
+            if self.first_layer is not None:
+                x = self.first_layer(x)
+            
+            # Store all intermediate outputs
+            layer_outputs = [x]
+            
+            for i, layer in enumerate(self.mlp):
+                # Combine all previous outputs
+                combined_input = sum(layer_outputs)
+                layer_output = layer(combined_input)
+                # Add activation and store for next layers
+                activated_output = F.relu(layer_output)
+                layer_outputs.append(activated_output)
+            
+            # Final output is the last layer's output
+            return layer_outputs[-1]
     
     def get_q_values(self, representation):
         return self.q_head(representation)
@@ -207,8 +327,8 @@ if __name__ == "__main__":
     envs = RecordEpisodeStatistics(envs)
     assert isinstance(envs.action_space, gym.spaces.Discrete), "only discrete action space is supported"
 
-    q_network = QNetwork(envs).to(device)
-    target_network = QNetwork(envs).to(device)
+    q_network = QNetwork(envs, args.num_layers, args.hidden_dim, args.mlp_type).to(device)
+    target_network = QNetwork(envs, args.num_layers, args.hidden_dim, args.mlp_type).to(device)
     target_network.load_state_dict(q_network.state_dict())  # Initialize target network with same weights
     
     optimizer = optim.RAdam(q_network.parameters(), lr=args.learning_rate)

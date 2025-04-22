@@ -13,7 +13,7 @@ RUN apt-get -y update && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies
-RUN pip install --upgrade --pre torch --index-url https://download.pytorch.org/whl/nightly/cu121
+RUN pip install lightly
 COPY requirements.txt requirements.txt
 RUN pip install -r requirements.txt
 RUN pip install wandb --user
