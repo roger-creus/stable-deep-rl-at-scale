@@ -16,14 +16,14 @@ from IPython import embed
 
 def parse_args():
     parser = argparse.ArgumentParser(description="MoCo Training and Linear Probing")
-    parser.add_argument("--train_epochs", type=int, default=50, help="Number of epochs for MoCo training")
-    parser.add_argument("--probe_epochs", type=int, default=50, help="Number of epochs for linear probing")
+    parser.add_argument("--train_epochs", type=int, default=200, help="Number of epochs for MoCo training")
+    parser.add_argument("--probe_epochs", type=int, default=100, help="Number of epochs for linear probing")
     parser.add_argument("--backbone", type=str, default="resnet18", choices=["resnet18", "resnet34", "resnet50"], help="Backbone architecture")
-    parser.add_argument("--batch_size", type=int, default=128, help="Batch size for training")
+    parser.add_argument("--batch_size", type=int, default=256, help="Batch size for training")
     parser.add_argument("--probe_batch_size", type=int, default=256, help="Batch size for linear probing")
     parser.add_argument("--dataset", type=str, default="cifar100", choices=["cifar10", "cifar100"], help="Dataset to use")
     parser.add_argument("--track", action="store_true", help="Use Weights & Biases for logging")
-    parser.add_argument("--lr", type=float, default=0.3, help="Learning rate for MoCo training")
+    parser.add_argument("--lr", type=float, default=0.0075, help="Learning rate for MoCo training")
     parser.add_argument("--probe_lr", type=float, default=0.05, help="Learning rate for linear probing")
     parser.add_argument("--optimizer", type=str, default="adam", choices=["adam", "sgd", "rmsprop", "radam", "kron"], help="Optimizer to use")
     parser.add_argument("--memory_bank_size", type=int, default=4096, help="Size of the memory bank")
