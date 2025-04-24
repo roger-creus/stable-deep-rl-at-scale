@@ -1,4 +1,8 @@
-gym<0.26
+gym==0.23.1
+gymnasium==0.28.1
+ale-py
+autorom-accept-rom-license
+autorom[accept-rom-license]
 envpool
 jax-jumpy==1.0.0
 matplotlib

@@ -29,11 +29,11 @@ def parse_mlp_width(net_size):
     if net_size == "small":
         return 512
     elif net_size == "medium":
-        return 1024
-    elif net_size == "large":
         return 2048
+    elif net_size == "large":
+        return 8192
     elif net_size == "xlarge":
-        return 4096
+        return 16384
     
 def get_act_fn_functional(act_fn):
     if act_fn == "relu":

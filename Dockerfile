@@ -18,6 +18,11 @@ COPY requirements.txt requirements.txt
 RUN pip install -r requirements.txt
 RUN pip install wandb --user
 
+COPY requirements_atari.txt requirements_atari.txt
+RUN pip install -r requirements_atari.txt
+
+RUN pip install -U typing-extensions
+
 # Set CA certificate environment variables
 ENV REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
 ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
