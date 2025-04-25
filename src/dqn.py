@@ -22,7 +22,8 @@ from stable_baselines3.common.buffers import ReplayBuffer
 from IPython import embed
 
 from utils.utils import parse_mlp_width, parse_mlp_depth, get_grad_norms, get_optimizer
-
+from models.encoder import AtariCNN, ImpalaCNN
+from models.agent import MLP, ResidualMLP, MultiSkipResidualMLP
 
 @dataclass
 class Args:
@@ -52,7 +53,7 @@ class Args:
     # Algorithm specific arguments
     env_id: str = "DemonAttackNoFrameskip-v4"
     """the id of the environment"""
-    total_timesteps: int = 10000000
+    total_timesteps: int = 5000000
     """total timesteps of the experiments"""
     learning_rate: float = 1e-4
     """the learning rate of the optimizer"""
@@ -83,8 +84,14 @@ class Args:
     """the width of the MLP"""
     mlp_depth: str = "small"
     """the depth of the MLP"""
-    optimizer: str = "adam"
+    optimizer: str = "adam" # adam, kron
     """the optimizer to use"""
+    use_ln: bool = False
+    """whether to use layer normalization"""
+    cnn_type: str = "atari" # atari, impala
+    """the type of CNN to use"""
+    mlp_type: str = "default" # default, residual, multiskip_residual
+    """the type of MLP to use"""
 
 
 def make_env(env_id, seed, idx, capture_video, run_name):
@@ -114,37 +121,58 @@ def make_env(env_id, seed, idx, capture_video, run_name):
 
 # ALGO LOGIC: initialize agent here:
 class QNetwork(nn.Module):
-    def __init__(self, env, layer_width, num_layers):
+    def __init__(self, env, mlp_type, mlp_width, mlp_depth, use_ln, cnn_type, device):
         super().__init__()
-        # CNN part - fixed architecture
-        self.cnn = nn.Sequential(
-            nn.Conv2d(4, 32, 8, stride=4),
-            nn.ReLU(),
-            nn.Conv2d(32, 64, 4, stride=2),
-            nn.ReLU(),
-            nn.Conv2d(64, 64, 3, stride=1),
-            nn.ReLU(),
-            nn.Flatten()
-        )
+        
+        if cnn_type == "atari":
+            self.cnn = AtariCNN(
+                cnn_channels=[32, 64, 64],
+                use_ln=use_ln,
+                activation_fn="relu",
+                device=device
+            )
+        elif cnn_type == "impala":
+            self.cnn = ImpalaCNN(
+                cnn_channels=[32, 64, 64],
+                use_ln=use_ln,
+                activation_fn="relu",
+                device=device
+            )
+        else:
+            raise ValueError(f"Invalid CNN type: {cnn_type}")
+        
+        if mlp_type == "default":
+            mlp_clss = MLP
+        elif mlp_type == "residual":
+            mlp_clss = ResidualMLP
+        elif mlp_type == "multiskip_residual":
+            mlp_clss = MultiSkipResidualMLP
+        else:
+            raise ValueError(f"Invalid MLP type: {mlp_type}")
         
         # MLP part - configurable width and depth
-        layers = []
-        input_dim = 3136  # Output dimension from CNN after flattening
+        with torch.no_grad():
+            dummy = env.single_observation_space.sample()
+            dummy_torch = torch.as_tensor(dummy).unsqueeze(0).float().to(device)
+            dummy_features = self.cnn(dummy_torch)
+            input_dim = dummy_features.view(dummy_features.size(0), -1).shape[1]
         
-        # Add hidden layers based on num_layers
-        for i in range(num_layers):
-            layers.append(nn.Linear(input_dim if i == 0 else layer_width, layer_width))
-            layers.append(nn.ReLU())
-            
-        # Add output layer
-        layers.append(nn.Linear(layer_width if num_layers > 0 else input_dim, env.single_action_space.n))
+        self.trunk = mlp_clss(
+            input_size=input_dim,
+            hidden_size=mlp_width,
+            output_size=512,
+            num_layers=mlp_depth,
+            use_ln=use_ln,
+            device=device,
+            last_act=True
+        )
         
-        self.mlp = nn.Sequential(*layers)
+        self.q_head = nn.Linear(512, env.single_action_space.n)
 
     def forward(self, x):
         x = x / 255.0
         features = self.cnn(x)
-        return self.mlp(features)
+        return self.q_head(self.trunk(features))
 
 
 def linear_schedule(start_e: float, end_e: float, duration: int, t: int):
@@ -164,7 +192,7 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
         )
     args = tyro.cli(Args)
     assert args.num_envs == 1, "vectorized envs are not supported at the moment"
-    run_name = f"DQN_ENV:{args.env_id}_OPTIM:{args.optimizer}_MLP:{args.mlp_width}_{args.mlp_depth}_SEED:{args.seed}"
+    run_name = f"DQN_ENV:{args.env_id}_OPTIM:{args.optimizer}_MLP.TYPE:{args.mlp_type}_MLP.DEPTH:{args.mlp_depth}_MLP.WIDTH:{args.mlp_width}_LN:{args.use_ln}_CNN:{args.cnn_type}_SEED:{args.seed}"
     if args.track:
         import wandb
 
@@ -192,9 +220,9 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
     assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
 
     layer_width = parse_mlp_width(args.mlp_width)
-    num_layers = parse_mlp_depth(args.mlp_depth, "default")
+    num_layers = parse_mlp_depth(args.mlp_depth, args.mlp_type)
 
-    q_network = QNetwork(envs, layer_width, num_layers).to(device)
+    q_network = QNetwork(envs, args.mlp_type, layer_width, num_layers, args.use_ln, args.cnn_type, device).to(device)
     
     optimizer_clss = get_optimizer(args.optimizer)
     if args.optimizer == "kron":
@@ -203,7 +231,7 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
     optimizer = optimizer_clss(q_network.parameters(), lr=args.learning_rate)
     print(f"Optimizer: {optimizer}")
     
-    target_network = QNetwork(envs, layer_width, num_layers).to(device)
+    target_network = QNetwork(envs, args.mlp_type, layer_width, num_layers, args.use_ln, args.cnn_type, device).to(device)
     target_network.load_state_dict(q_network.state_dict())
     print(q_network)
 

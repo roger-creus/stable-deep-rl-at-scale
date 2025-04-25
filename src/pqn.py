@@ -196,10 +196,10 @@ if __name__ == "__main__":
 
     ####### Optimizer #######
     # recommended in https://github.com/evanatyourservice/kron_torch
-    if args.optimizer == "kron":
+    if args.optimizer == "kron" or args.optimizer == "radam":
         args.learning_rate /= 3.0
         opt_kwargs = {}
-    elif "adam" in args.optimizer:
+    elif args.optimizer == "adam":
         opt_kwargs = {"capturable": args.cudagraphs and not args.compile}
         
     optimizer_clss = get_optimizer(args.optimizer)

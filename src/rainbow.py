@@ -22,6 +22,8 @@ from stable_baselines3.common.atari_wrappers import (
     NoopResetEnv,
 )
 from utils.utils import parse_mlp_width, parse_mlp_depth, get_grad_norms, get_optimizer
+from models.encoder import AtariCNN, ImpalaCNN
+from models.agent import MLP, ResidualMLP, MultiSkipResidualMLP
 
 
 @dataclass
@@ -49,9 +51,9 @@ class Args:
     hf_entity: str = ""
     """the user or org name of the model repository from the Hugging Face Hub"""
 
-    env_id: str = "BreakoutNoFrameskip-v4"
+    env_id: str = "DemonAttackNoFrameskip-v4"
     """the id of the environment"""
-    total_timesteps: int = 10000000
+    total_timesteps: int = 5000000
     """total timesteps of the experiments"""
     learning_rate: float = 0.0000625
     """the learning rate of the optimizer"""
@@ -91,13 +93,19 @@ class Args:
     """the return lower bound"""
     v_max: float = 10
     """the return upper bound"""
+    
     mlp_width: str = "small"
     """the width of the MLP"""
     mlp_depth: str = "small"
     """the depth of the MLP"""
     optimizer: str = "adam"
     """the optimizer to use"""
-    
+    use_ln: bool = False
+    """whether to use layer normalization"""
+    cnn_type: str = "atari" # atari, impala
+    """the type of CNN to use"""
+    mlp_type: str = "default" # default, residual, multiskip_residual
+    """the type of MLP to use"""
 
 def make_env(env_id, seed, idx, capture_video, run_name):
     def thunk():
@@ -125,11 +133,12 @@ def make_env(env_id, seed, idx, capture_video, run_name):
 
 
 class NoisyLinear(nn.Module):
-    def __init__(self, in_features, out_features, std_init=0.5):
+    def __init__(self, in_features, out_features, std_init=0.5, device='cpu'):
         super().__init__()
         self.in_features = in_features
         self.out_features = out_features
         self.std_init = std_init
+        self.device = device
 
         self.weight_mu = nn.Parameter(torch.FloatTensor(out_features, in_features))
         self.weight_sigma = nn.Parameter(torch.FloatTensor(out_features, in_features))
@@ -164,7 +173,7 @@ class NoisyLinear(nn.Module):
 
 # ALGO LOGIC: initialize agent here:
 class NoisyDuelingDistributionalNetwork(nn.Module):
-    def __init__(self, env, n_atoms, v_min, v_max, layer_width, num_layers):
+    def __init__(self, env, mlp_type, mlp_width, mlp_depth, use_ln, cnn_type, device, n_atoms, v_min, v_max):
         super().__init__()
         self.n_atoms = n_atoms
         self.v_min = v_min
@@ -173,52 +182,94 @@ class NoisyDuelingDistributionalNetwork(nn.Module):
         self.n_actions = env.single_action_space.n
         self.register_buffer("support", torch.linspace(v_min, v_max, n_atoms))
 
-        self.network = nn.Sequential(
-            nn.Conv2d(4, 32, 8, stride=4),
-            nn.ReLU(),
-            nn.Conv2d(32, 64, 4, stride=2),
-            nn.ReLU(),
-            nn.Conv2d(64, 64, 3, stride=1),
-            nn.ReLU(),
-            nn.Flatten(),
+        if cnn_type == "atari":
+            self.cnn = AtariCNN(
+                cnn_channels=[32, 64, 64],
+                use_ln=use_ln,
+                activation_fn="relu",
+                device=device
+            )
+        elif cnn_type == "impala":
+            self.cnn = ImpalaCNN(
+                cnn_channels=[32, 64, 64],
+                use_ln=use_ln,
+                activation_fn="relu",
+                device=device
+            )
+        else:
+            raise ValueError(f"Invalid CNN type: {cnn_type}")
+        
+        if mlp_type == "default":
+            mlp_clss = MLP
+        elif mlp_type == "residual":
+            mlp_clss = ResidualMLP
+        elif mlp_type == "multiskip_residual":
+            mlp_clss = MultiSkipResidualMLP
+        else:
+            raise ValueError(f"Invalid MLP type: {mlp_type}")
+        
+        with torch.no_grad():
+            dummy = env.single_observation_space.sample()
+            dummy_torch = torch.as_tensor(dummy).unsqueeze(0).float().to(device)
+            dummy_features = self.cnn(dummy_torch)
+            input_dim = dummy_features.view(dummy_features.size(0), -1).shape[1]
+        
+        self.value_trunk = mlp_clss(
+            input_size=input_dim,
+            hidden_size=mlp_width,
+            output_size=512,
+            num_layers=mlp_depth,
+            use_ln=use_ln,
+            device=device,
+            last_act=True,
+            linear_clss=NoisyLinear
         )
-        conv_output_size = 3136
+        
+        self.value_head = nn.Sequential(
+            NoisyLinear(512, n_atoms)
+        )
 
-        # Create value head with configurable depth
-        value_layers = []
-        for i in range(num_layers):
-            if i == 0:
-                value_layers.append(NoisyLinear(conv_output_size, layer_width))
-            else:
-                value_layers.append(NoisyLinear(layer_width, layer_width))
-            value_layers.append(nn.ReLU())
-        value_layers.append(NoisyLinear(layer_width, n_atoms))
-        self.value_head = nn.Sequential(*value_layers)
-
-        # Create advantage head with configurable depth
-        advantage_layers = []
-        for i in range(num_layers):
-            if i == 0:
-                advantage_layers.append(NoisyLinear(conv_output_size, layer_width))
-            else:
-                advantage_layers.append(NoisyLinear(layer_width, layer_width))
-            advantage_layers.append(nn.ReLU())
-        advantage_layers.append(NoisyLinear(layer_width, n_atoms * self.n_actions))
-        self.advantage_head = nn.Sequential(*advantage_layers)
+        
+        self.advantage_trunk = mlp_clss(
+            input_size=input_dim,
+            hidden_size=mlp_width,
+            output_size=512,
+            num_layers=mlp_depth,
+            use_ln=use_ln,
+            device=device,
+            last_act=True,
+            linear_clss=NoisyLinear
+        )   
+        
+        
+        self.advantage_head = nn.Sequential(
+            NoisyLinear(512, n_atoms * self.n_actions)
+        )
 
     def forward(self, x):
-        h = self.network(x / 255.0)
-        value = self.value_head(h).view(-1, 1, self.n_atoms)
-        advantage = self.advantage_head(h).view(-1, self.n_actions, self.n_atoms)
+        h = self.cnn(x / 255.0)
+        h_value = self.value_trunk(h)
+        h_advantage = self.advantage_trunk(h)
+        value = self.value_head(h_value).view(-1, 1, self.n_atoms)
+        advantage = self.advantage_head(h_advantage).view(-1, self.n_actions, self.n_atoms)
         q_atoms = value + advantage - advantage.mean(dim=1, keepdim=True)
         q_dist = F.softmax(q_atoms, dim=2)
         return q_dist
 
     def reset_noise(self):
-        for layer in self.value_head:
+        for layer in self.value_trunk.modules():
             if isinstance(layer, NoisyLinear):
                 layer.reset_noise()
-        for layer in self.advantage_head:
+        
+        for layer in self.advantage_trunk.modules():
+            if isinstance(layer, NoisyLinear):
+                print(f"Resetting noise in {layer}")
+                layer.reset_noise()
+                
+        for layer in self.value_head.modules():
+            if isinstance(layer, NoisyLinear):
+                layer.reset_noise()
+        for layer in self.advantage_head.modules():
             if isinstance(layer, NoisyLinear):
                 layer.reset_noise()
 
@@ -399,7 +450,7 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
         )
     args = tyro.cli(Args)
     assert args.num_envs == 1, "vectorized envs are not supported at the moment"
-    run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
+    run_name = f"RAINBOW_ENV:{args.env_id}_OPTIM:{args.optimizer}_MLP.TYPE:{args.mlp_type}_MLP.DEPTH:{args.mlp_depth}_MLP.WIDTH:{args.mlp_width}_LN:{args.use_ln}_CNN:{args.cnn_type}_SEED:{args.seed}"
     if args.track:
         import wandb
 
@@ -432,7 +483,7 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
     num_layers = parse_mlp_depth(args.mlp_depth, "default")
     
     q_network = NoisyDuelingDistributionalNetwork(
-        envs, args.n_atoms, args.v_min, args.v_max, layer_width, num_layers
+        envs, args.mlp_type, layer_width, num_layers, args.use_ln, args.cnn_type, device, args.n_atoms, args.v_min, args.v_max
     ).to(device)
     optimizer_clss = get_optimizer(args.optimizer)
     optimizer = optimizer_clss(q_network.parameters(), lr=args.learning_rate)
@@ -441,7 +492,7 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
     print(f"Optimizer: {optimizer}")
     
     target_network = NoisyDuelingDistributionalNetwork(
-        envs, args.n_atoms, args.v_min, args.v_max, layer_width, num_layers
+        envs, args.mlp_type, layer_width, num_layers, args.use_ln, args.cnn_type, device, args.n_atoms, args.v_min, args.v_max
     ).to(device)
     target_network.load_state_dict(q_network.state_dict())
 

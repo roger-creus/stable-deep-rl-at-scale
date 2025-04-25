@@ -65,7 +65,7 @@ class NonStationaryDataset(Dataset):
         n = len(self.dataset.targets)
         self.permutation = np.random.permutation(n).tolist()
 
-def train_cifar(run_name, mlp_type, optimizer_name, mlp_depth, dataset_name="cifar100", non_stationary=False, epochs=25, batch_size=128, use_ln=False, device="cuda"): 
+def train_cifar(run_name, mlp_type, optimizer_name, mlp_depth, mlp_width, dataset_name="cifar100", non_stationary=False, epochs=25, batch_size=128, use_ln=False, device="cuda"): 
     device = torch.device(device if torch.cuda.is_available() else "cpu")
     
     # Initialize wandb.
@@ -76,6 +76,7 @@ def train_cifar(run_name, mlp_type, optimizer_name, mlp_depth, dataset_name="cif
             "mlp_type": mlp_type,
             "optimizer": optimizer_name,
             "mlp_depth": mlp_depth,
+            "mlp_width": mlp_width,
             "epochs": epochs,
             "batch_size": batch_size,
             "lr": 0.00025,
@@ -124,7 +125,7 @@ def train_cifar(run_name, mlp_type, optimizer_name, mlp_depth, dataset_name="cif
     testloader = DataLoader(testset, batch_size=batch_size, shuffle=False, num_workers=4)
     
     mlp_input_size = 2048
-    mlp = get_mlp(mlp_type, input_size=mlp_input_size, mlp_width="small", mlp_depth=mlp_depth, use_ln=use_ln, device=device)
+    mlp = get_mlp(mlp_type, input_size=mlp_input_size, mlp_width=mlp_width, mlp_depth=mlp_depth, use_ln=use_ln, device=device)
     
                 
     class CIFARClassifier(nn.Module):
@@ -338,8 +339,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--mlp_type", type=str, required=True)
     parser.add_argument("--mlp_depth", type=str, required=True)
+    parser.add_argument("--mlp_width", type=str, required=True)
     parser.add_argument("--optimizer", type=str, required=True)
-    parser.add_argument("--dataset", type=str, default="cifar100", choices=["cifar10", "cifar100"])
+    parser.add_argument("--dataset", type=str, default="cifar10", choices=["cifar10", "cifar100"])
     parser.add_argument("--non_stationary", action="store_true", help="Make the problem non-stationary by shuffling labels")
     parser.add_argument("--batch_size", type=int, default=256)
     parser.add_argument("--epochs", type=int, default=100)
@@ -350,12 +352,13 @@ if __name__ == "__main__":
     if args.optimizer == "kron":
         args.lr /= 3.0
     
-    run_name = f"DATA:{args.dataset}_MLP.TYPE:{args.mlp_type}_MLP.DEPTH:{args.mlp_depth}_OPTIM:{args.optimizer}_NS:{args.non_stationary}_LN:{args.use_ln}"
+    run_name = f"DATA:{args.dataset}_MLP.TYPE:{args.mlp_type}_MLP.DEPTH:{args.mlp_depth}_MLP.WIDTH:{args.mlp_width}_OPTIM:{args.optimizer}_NS:{args.non_stationary}_LN:{args.use_ln}"
     train_cifar(
         run_name,
         args.mlp_type,
         args.optimizer,
         args.mlp_depth,
+        args.mlp_width,
         dataset_name=args.dataset,
         non_stationary=args.non_stationary, 
         epochs=args.epochs, 

@@ -19,3 +19,4 @@ run_pqn_targets.sh
 
 *.sif
 *.pyc
+*.csv

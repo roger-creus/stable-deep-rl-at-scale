@@ -12,8 +12,8 @@ pandas
 protobuf
 pygame
 stable-baselines3
-tensordict-nightly
-torchrl-nightly
+tensordict-nightly==2025.1.1
+torchrl-nightly==2025.1.1
 tqdm
 tyro
 wandb

@@ -29,11 +29,11 @@ def parse_mlp_width(net_size):
     if net_size == "small":
         return 512
     elif net_size == "medium":
-        return 2048
+        return 512 * 3
     elif net_size == "large":
-        return 8192
+        return 512 * 5
     elif net_size == "xlarge":
-        return 16384
+        return 512 * 10
     
 def get_act_fn_functional(act_fn):
     if act_fn == "relu":
@@ -82,6 +82,8 @@ def get_optimizer(optimizer):
         return torch.optim.RMSprop
     elif optimizer == "kron":
         return Kron
+    elif optimizer == "kronos":
+        return Kronos
     else:
         raise ValueError(f"Unknown optimizer: {optimizer}") 
 
@@ -94,8 +96,13 @@ def clean_grad_stats(grad_stats, use_ln=True):
     elif use_ln:
         # atari cnn can still use layernorms but it wont be indicated in the key. we can detect them by keeping only the ones that are divisible by 3 (conv, layernorm, activation)...
         for k in list(cleaned.keys()):
-            if "cnn" in k and int(k.split("_")[1]) % 3 != 0:
-                cleaned.pop(k)
+            if "cnn" in k:
+                try:
+                    if int(k.split("_")[1]) % 3 != 0:
+                        cleaned.pop(k)
+                except:
+                    if int(k.split("_")[2]) % 3 != 0:
+                        cleaned.pop(k)
     
     cleaned_final = {f"{k.split('_')[0]}_{i}": v for i, (k, v) in enumerate(cleaned.items())}
     new_clean = {}

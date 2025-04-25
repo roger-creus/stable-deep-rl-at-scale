@@ -18,7 +18,8 @@ class MLP(nn.Module):
         last_act=False,
         use_ln=False,
         activation_fn="relu",
-        device='cpu'
+        device='cpu',
+        linear_clss=nn.Linear
     ):
         super(MLP, self).__init__()
         self.output_size = output_size
@@ -31,19 +32,22 @@ class MLP(nn.Module):
         for i in range(num_layers):
             # Input layer
             if i == 0:
-                mlp.append(
-                    layer_init(nn.Linear(input_size, hidden_size, device=device))
-                )
+                if linear_clss.__name__ == 'NoisyLinear':
+                    mlp.append(linear_clss(input_size, hidden_size, device=device))
+                else:
+                    mlp.append(layer_init(linear_clss(input_size, hidden_size, device=device)))
             # Output layer
             elif i == num_layers - 1:
-                mlp.append(
-                    layer_init(nn.Linear(hidden_size, output_size, device=device))
-                )
+                if linear_clss.__name__ == 'NoisyLinear':
+                    mlp.append(linear_clss(hidden_size, output_size, device=device))
+                else:
+                    mlp.append(layer_init(linear_clss(hidden_size, output_size, device=device)))
             # Hidden layers
             else:
-                mlp.append(
-                    layer_init(nn.Linear(hidden_size, hidden_size, device=device))
-                )
+                if linear_clss.__name__ == 'NoisyLinear':
+                    mlp.append(linear_clss(hidden_size, hidden_size, device=device))
+                else:
+                    mlp.append(layer_init(linear_clss(hidden_size, hidden_size, device=device)))
                 
             if i < num_layers - 1:
                 # Add a layer normalization layer if needed
@@ -78,18 +82,22 @@ class ResidualBlock(nn.Module):
         hidden_size,
         use_ln=False,
         activation_fn="relu",
-        device='cpu'
+        device='cpu',
+        linear_clss=nn.Linear
     ):
         super().__init__()
         self.use_ln = use_ln
         self.act_ = get_act_fn_functional(activation_fn)
         
-        self.linear0 = layer_init(nn.Linear(hidden_size, hidden_size, device=device))
+        if linear_clss.__name__ == 'NoisyLinear':
+            self.linear0 = linear_clss(hidden_size, hidden_size, device=device)
+            self.linear1 = linear_clss(hidden_size, hidden_size, device=device)
+        else:
+            self.linear0 = layer_init(linear_clss(hidden_size, hidden_size, device=device))
+            self.linear1 = layer_init(linear_clss(hidden_size, hidden_size, device=device))
+            
         if self.use_ln:
             self.ln0 = nn.LayerNorm(hidden_size, device=device)
-            
-        self.linear1 = layer_init(nn.Linear(hidden_size, hidden_size, device=device))
-        if self.use_ln:
             self.ln1 = nn.LayerNorm(hidden_size, device=device)
 
     def forward(self, x):
@@ -114,21 +122,30 @@ class ResidualMLP(nn.Module):
         last_act=False,
         use_ln=False,
         activation_fn="relu",
-        device='cpu'
+        device='cpu',
+        linear_clss=nn.Linear
     ):
         super().__init__()
         self.output_size = output_size
         act_fn_class = get_act_fn_clss(activation_fn)
         layers = []
         
-        layers.append(layer_init(nn.Linear(input_size, hidden_size, device=device)))
+        if linear_clss.__name__ == 'NoisyLinear':
+            layers.append(linear_clss(input_size, hidden_size, device=device))
+        else:
+            layers.append(layer_init(linear_clss(input_size, hidden_size, device=device)))
+            
         if use_ln:
             layers.append(nn.LayerNorm(hidden_size, device=device))
         
         for _ in range(num_layers):
-            layers.append(ResidualBlock(hidden_size, use_ln=use_ln, activation_fn=activation_fn, device=device))
+            layers.append(ResidualBlock(hidden_size, use_ln=use_ln, activation_fn=activation_fn, device=device, linear_clss=linear_clss))
         
-        layers.append(layer_init(nn.Linear(hidden_size, output_size, device=device)))
+        if linear_clss.__name__ == 'NoisyLinear':
+            layers.append(linear_clss(hidden_size, output_size, device=device))
+        else:
+            layers.append(layer_init(linear_clss(hidden_size, output_size, device=device)))
+            
         if use_ln:
             layers.append(nn.LayerNorm(output_size, device=device))
         if last_act:
@@ -146,9 +163,9 @@ class StoreGlobalSkip(nn.Module):
         return (x, x)
 
 class MultiSkipResidualBlock(nn.Module):
-    def __init__(self, hidden_size, use_ln=False, activation_fn="relu", device='cpu'):
+    def __init__(self, hidden_size, use_ln=False, activation_fn="relu", device='cpu', linear_clss=nn.Linear):
         super().__init__()
-        self.block = ResidualBlock(hidden_size, use_ln=use_ln, activation_fn=activation_fn, device=device)
+        self.block = ResidualBlock(hidden_size, use_ln=use_ln, activation_fn=activation_fn, device=device, linear_clss=linear_clss)
         
     def forward(self, x_tuple):
         x, global_skip = x_tuple
@@ -171,7 +188,8 @@ class MultiSkipResidualMLP(nn.Module):
         last_act=False,
         use_ln=False,
         activation_fn="relu",
-        device='cpu'
+        device='cpu',
+        linear_clss=nn.Linear
     ):
         super().__init__()
         self.output_size = output_size
@@ -179,7 +197,11 @@ class MultiSkipResidualMLP(nn.Module):
         layers = []
         
         # Initial linear layer and optional layer norm.
-        layers.append(layer_init(nn.Linear(input_size, hidden_size, device=device)))
+        if linear_clss.__name__ == 'NoisyLinear':
+            layers.append(linear_clss(input_size, hidden_size, device=device))
+        else:
+            layers.append(layer_init(linear_clss(input_size, hidden_size, device=device)))
+            
         if use_ln:
             layers.append(nn.LayerNorm(hidden_size, device=device))
         
@@ -188,13 +210,17 @@ class MultiSkipResidualMLP(nn.Module):
         
         # Append the sequence of multi-skip residual blocks.
         for _ in range(num_layers):
-            layers.append(MultiSkipResidualBlock(hidden_size, use_ln=use_ln, activation_fn=activation_fn, device=device))
+            layers.append(MultiSkipResidualBlock(hidden_size, use_ln=use_ln, activation_fn=activation_fn, device=device, linear_clss=linear_clss))
         
         # Extract the current output (discarding the global skip from the tuple).
         layers.append(ExtractOutput())
         
         # Final linear layer and optional layer norm/activation.
-        layers.append(layer_init(nn.Linear(hidden_size, output_size, device=device)))
+        if linear_clss.__name__ == 'NoisyLinear':
+            layers.append(linear_clss(hidden_size, output_size, device=device))
+        else:
+            layers.append(layer_init(linear_clss(hidden_size, output_size, device=device)))
+            
         if use_ln:
             layers.append(nn.LayerNorm(output_size, device=device))
         if last_act:
