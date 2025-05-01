@@ -20,7 +20,7 @@ RUN pip install wandb --user
 
 COPY requirements_atari.txt requirements_atari.txt
 RUN pip install -r requirements_atari.txt
-
+RUN pip install torch_optimizer
 RUN pip install -U typing-extensions
 
 # Set CA certificate environment variables

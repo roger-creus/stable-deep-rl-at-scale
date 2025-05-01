@@ -3,6 +3,7 @@ import torch
 import torch.nn.functional as F
 import torch.nn as nn
 from kron_torch import Kron
+import torch_optimizer as optim
 from IPython import embed
 
 def parse_cnn_size(net_size):
@@ -82,8 +83,8 @@ def get_optimizer(optimizer):
         return torch.optim.RMSprop
     elif optimizer == "kron":
         return Kron
-    elif optimizer == "kronos":
-        return Kronos
+    elif optimizer == "shampoo":
+        return optim.Shampoo
     else:
         raise ValueError(f"Unknown optimizer: {optimizer}") 
 

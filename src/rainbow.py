@@ -536,7 +536,7 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                         wandb.log({
                             "charts/episodic_return": info["episode"]["r"],
                             "charts/episodic_length": info["episode"]["l"]
-                        })
+                        }, step=global_step)
 
         # TRY NOT TO MODIFY: save data to reply buffer; handle `final_observation`
         real_next_obs = next_obs.copy()
@@ -618,7 +618,7 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                             "charts/SPS": sps,
                             "charts/beta": rb.beta,
                             "grad_norms": grad_norms
-                        })
+                        }, step=global_step)
 
                 # optimize the model
                 optimizer.zero_grad()

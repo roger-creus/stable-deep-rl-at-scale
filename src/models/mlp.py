@@ -2,6 +2,7 @@ import torch
 import numpy as np
 import torch.nn as nn
 from utils.utils import get_act_fn_clss, get_act_fn_functional
+from torch.nn.utils import spectral_norm
 
 def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
     torch.nn.init.orthogonal_(layer.weight, std)
@@ -17,6 +18,7 @@ class MLP(nn.Module):
         num_layers=1,
         last_act=False,
         use_ln=False,
+        use_spectral_norm=False,
         activation_fn="relu",
         device='cpu',
         linear_clss=nn.Linear
@@ -33,21 +35,30 @@ class MLP(nn.Module):
             # Input layer
             if i == 0:
                 if linear_clss.__name__ == 'NoisyLinear':
-                    mlp.append(linear_clss(input_size, hidden_size, device=device))
+                    layer = linear_clss(input_size, hidden_size, device=device)
                 else:
-                    mlp.append(layer_init(linear_clss(input_size, hidden_size, device=device)))
+                    layer = layer_init(linear_clss(input_size, hidden_size, device=device))
+                if use_spectral_norm:
+                    layer = spectral_norm(layer)
+                mlp.append(layer)
             # Output layer
             elif i == num_layers - 1:
                 if linear_clss.__name__ == 'NoisyLinear':
-                    mlp.append(linear_clss(hidden_size, output_size, device=device))
+                    layer = linear_clss(hidden_size, output_size, device=device)
                 else:
-                    mlp.append(layer_init(linear_clss(hidden_size, output_size, device=device)))
+                    layer = layer_init(linear_clss(hidden_size, output_size, device=device))
+                if use_spectral_norm:
+                    layer = spectral_norm(layer)
+                mlp.append(layer)
             # Hidden layers
             else:
                 if linear_clss.__name__ == 'NoisyLinear':
-                    mlp.append(linear_clss(hidden_size, hidden_size, device=device))
+                    layer = linear_clss(hidden_size, hidden_size, device=device)
                 else:
-                    mlp.append(layer_init(linear_clss(hidden_size, hidden_size, device=device)))
+                    layer = layer_init(linear_clss(hidden_size, hidden_size, device=device))
+                if use_spectral_norm:
+                    layer = spectral_norm(layer)
+                mlp.append(layer)
                 
             if i < num_layers - 1:
                 # Add a layer normalization layer if needed
@@ -81,6 +92,7 @@ class ResidualBlock(nn.Module):
         self,
         hidden_size,
         use_ln=False,
+        use_spectral_norm=False,
         activation_fn="relu",
         device='cpu',
         linear_clss=nn.Linear
@@ -95,6 +107,10 @@ class ResidualBlock(nn.Module):
         else:
             self.linear0 = layer_init(linear_clss(hidden_size, hidden_size, device=device))
             self.linear1 = layer_init(linear_clss(hidden_size, hidden_size, device=device))
+        
+        if use_spectral_norm:
+            self.linear0 = spectral_norm(self.linear0)
+            self.linear1 = spectral_norm(self.linear1)
             
         if self.use_ln:
             self.ln0 = nn.LayerNorm(hidden_size, device=device)
@@ -121,6 +137,7 @@ class ResidualMLP(nn.Module):
         num_layers=1,
         last_act=False,
         use_ln=False,
+        use_spectral_norm=False,
         activation_fn="relu",
         device='cpu',
         linear_clss=nn.Linear
@@ -131,20 +148,28 @@ class ResidualMLP(nn.Module):
         layers = []
         
         if linear_clss.__name__ == 'NoisyLinear':
-            layers.append(linear_clss(input_size, hidden_size, device=device))
+            layer = linear_clss(input_size, hidden_size, device=device)
         else:
-            layers.append(layer_init(linear_clss(input_size, hidden_size, device=device)))
+            layer = layer_init(linear_clss(input_size, hidden_size, device=device))
+        
+        if use_spectral_norm:
+            layer = spectral_norm(layer)
+        layers.append(layer)
             
         if use_ln:
             layers.append(nn.LayerNorm(hidden_size, device=device))
         
         for _ in range(num_layers):
-            layers.append(ResidualBlock(hidden_size, use_ln=use_ln, activation_fn=activation_fn, device=device, linear_clss=linear_clss))
+            layers.append(ResidualBlock(hidden_size, use_ln=use_ln, use_spectral_norm=use_spectral_norm, activation_fn=activation_fn, device=device, linear_clss=linear_clss))
         
         if linear_clss.__name__ == 'NoisyLinear':
-            layers.append(linear_clss(hidden_size, output_size, device=device))
+            layer = linear_clss(hidden_size, output_size, device=device)
         else:
-            layers.append(layer_init(linear_clss(hidden_size, output_size, device=device)))
+            layer = layer_init(linear_clss(hidden_size, output_size, device=device))
+        
+        if use_spectral_norm:
+            layer = spectral_norm(layer)
+        layers.append(layer)
             
         if use_ln:
             layers.append(nn.LayerNorm(output_size, device=device))
@@ -163,9 +188,9 @@ class StoreGlobalSkip(nn.Module):
         return (x, x)
 
 class MultiSkipResidualBlock(nn.Module):
-    def __init__(self, hidden_size, use_ln=False, activation_fn="relu", device='cpu', linear_clss=nn.Linear):
+    def __init__(self, hidden_size, use_ln=False, use_spectral_norm=False, activation_fn="relu", device='cpu', linear_clss=nn.Linear):
         super().__init__()
-        self.block = ResidualBlock(hidden_size, use_ln=use_ln, activation_fn=activation_fn, device=device, linear_clss=linear_clss)
+        self.block = ResidualBlock(hidden_size, use_ln=use_ln, use_spectral_norm=use_spectral_norm, activation_fn=activation_fn, device=device, linear_clss=linear_clss)
         
     def forward(self, x_tuple):
         x, global_skip = x_tuple
@@ -187,6 +212,7 @@ class MultiSkipResidualMLP(nn.Module):
         num_layers=1,
         last_act=False,
         use_ln=False,
+        use_spectral_norm=False,
         activation_fn="relu",
         device='cpu',
         linear_clss=nn.Linear
@@ -198,9 +224,13 @@ class MultiSkipResidualMLP(nn.Module):
         
         # Initial linear layer and optional layer norm.
         if linear_clss.__name__ == 'NoisyLinear':
-            layers.append(linear_clss(input_size, hidden_size, device=device))
+            layer = linear_clss(input_size, hidden_size, device=device)
         else:
-            layers.append(layer_init(linear_clss(input_size, hidden_size, device=device)))
+            layer = layer_init(linear_clss(input_size, hidden_size, device=device))
+        
+        if use_spectral_norm:
+            layer = spectral_norm(layer)
+        layers.append(layer)
             
         if use_ln:
             layers.append(nn.LayerNorm(hidden_size, device=device))
@@ -210,16 +240,20 @@ class MultiSkipResidualMLP(nn.Module):
         
         # Append the sequence of multi-skip residual blocks.
         for _ in range(num_layers):
-            layers.append(MultiSkipResidualBlock(hidden_size, use_ln=use_ln, activation_fn=activation_fn, device=device, linear_clss=linear_clss))
+            layers.append(MultiSkipResidualBlock(hidden_size, use_ln=use_ln, use_spectral_norm=use_spectral_norm, activation_fn=activation_fn, device=device, linear_clss=linear_clss))
         
         # Extract the current output (discarding the global skip from the tuple).
         layers.append(ExtractOutput())
         
         # Final linear layer and optional layer norm/activation.
         if linear_clss.__name__ == 'NoisyLinear':
-            layers.append(linear_clss(hidden_size, output_size, device=device))
+            layer = linear_clss(hidden_size, output_size, device=device)
         else:
-            layers.append(layer_init(linear_clss(hidden_size, output_size, device=device)))
+            layer = layer_init(linear_clss(hidden_size, output_size, device=device))
+        
+        if use_spectral_norm:
+            layer = spectral_norm(layer)
+        layers.append(layer)
             
         if use_ln:
             layers.append(nn.LayerNorm(output_size, device=device))

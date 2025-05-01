@@ -18,6 +18,7 @@ class BasePQNAgent(nn.Module):
         self,
         envs,
         use_ln=True,
+        use_spectral_norm=False,
         cnn_type="atari",
         mlp_type="default",
         cnn_channels=[32, 64, 64],
@@ -80,6 +81,7 @@ class BasePQNAgent(nn.Module):
             output_size=trunk_output_size,
             num_layers=trunk_num_layers,
             use_ln=use_ln,
+            use_spectral_norm=use_spectral_norm,
             activation_fn=activation_fn,
             device=device,
             last_act=False
@@ -230,6 +232,7 @@ class PQNAgent(BasePQNAgent):
         self,
         envs,
         use_ln=True,
+        use_spectral_norm=False,
         cnn_type="atari",
         mlp_type="default",
         cnn_channels=[32, 64, 64],
@@ -242,6 +245,7 @@ class PQNAgent(BasePQNAgent):
         super().__init__(
             envs,
             use_ln=use_ln,
+            use_spectral_norm=use_spectral_norm,
             cnn_type=cnn_type,
             mlp_type=mlp_type,
             cnn_channels=cnn_channels,
@@ -281,6 +285,7 @@ class DistributionalPQNAgent(BasePQNAgent):
         self,
         envs,
         use_ln=True,
+        use_spectral_norm=False,
         cnn_type="atari",
         mlp_type="default",
         cnn_channels=[32, 64, 64],
@@ -296,6 +301,7 @@ class DistributionalPQNAgent(BasePQNAgent):
         super().__init__(
             envs,
             use_ln=use_ln,
+            use_spectral_norm=use_spectral_norm,
             cnn_type=cnn_type,
             mlp_type=mlp_type,
             cnn_channels=cnn_channels,
@@ -350,6 +356,7 @@ class SharedTrunkPPOAgent(nn.Module):
         self,
         envs,
         use_ln=False,
+        use_spectral_norm=False,
         activation_fn="relu",
         cnn_type="atari",
         mlp_type="default",
@@ -396,6 +403,7 @@ class SharedTrunkPPOAgent(nn.Module):
             num_layers=trunk_num_layers,
             activation_fn=activation_fn,
             use_ln=use_ln,
+            use_spectral_norm=use_spectral_norm,
             last_act=False,
             device=device
         )
@@ -566,6 +574,7 @@ class DecoupledPPOAgent(nn.Module):
         self,
         envs,
         use_ln=False,
+        use_spectral_norm=False,
         cnn_type="atari",
         cnn_channels=[32, 64, 64],
         activation_fn="relu",
@@ -612,6 +621,7 @@ class DecoupledPPOAgent(nn.Module):
                 num_layers=trunk_num_layers,
                 activation_fn=activation_fn,
                 use_ln=use_ln,
+                use_spectral_norm=use_spectral_norm,
                 last_act=True,
                 device=device
             ),
@@ -631,6 +641,7 @@ class DecoupledPPOAgent(nn.Module):
                 output_size=trunk_output_size,
                 num_layers=trunk_num_layers,
                 use_ln=use_ln,
+                use_spectral_norm=use_spectral_norm,
                 activation_fn=activation_fn,
                 last_act=True,
                 device=device

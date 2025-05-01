@@ -53,6 +53,8 @@ class PQNArgs:
     # Agent Args
     use_ln: bool = True
     """whether to use layer normalization"""
+    use_spectral_norm: bool = False
+    """whether to use spectral normalization"""
     cnn_type: str = "atari"
     """the type of the CNN"""
     mlp_type: str = "default" #default,residual

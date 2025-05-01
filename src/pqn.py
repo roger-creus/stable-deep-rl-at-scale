@@ -137,7 +137,7 @@ if __name__ == "__main__":
     args.log_iterations_img = np.unique(args.log_iterations_img)
     args.log_iterations_img = np.insert(args.log_iterations_img, 0, 1)
     
-    run_name = f"PQN_ENV:{args.env_id}_OPTIM:{args.optimizer}_CNN:{args.cnn_type}_CNN.SIZE:{args.cnn_size}_MLP:{args.mlp_type}_MLP.WIDTH:{args.mlp_width}_MLP.DEPTH:{args.mlp_depth}_LN:{args.use_ln}_ACTFN:{args.activation_fn}_EPOCHS:{args.update_epochs}_SEED:{args.seed}"
+    run_name = f"PQN_ENV:{args.env_id}_OPTIM:{args.optimizer}_CNN:{args.cnn_type}_CNN.SIZE:{args.cnn_size}_MLP:{args.mlp_type}_MLP.WIDTH:{args.mlp_width}_MLP.DEPTH:{args.mlp_depth}_LN:{args.use_ln}_SPECTRAL:{args.use_spectral_norm}_ACTFN:{args.activation_fn}_EPOCHS:{args.update_epochs}_SEED:{args.seed}"
     args.run_name = run_name
     
     random.seed(args.seed)
@@ -196,18 +196,15 @@ if __name__ == "__main__":
 
     ####### Optimizer #######
     # recommended in https://github.com/evanatyourservice/kron_torch
-    if args.optimizer == "kron" or args.optimizer == "radam":
+    if args.optimizer == "kron":
         args.learning_rate /= 3.0
-        opt_kwargs = {}
-    elif args.optimizer == "adam":
-        opt_kwargs = {"capturable": args.cudagraphs and not args.compile}
         
     optimizer_clss = get_optimizer(args.optimizer)
     optimizer = optimizer_clss(
         agent.parameters(),
         lr=torch.tensor(args.learning_rate, device=device),
-        **opt_kwargs,
     )
+    print(optimizer)
 
     ####### Executables #######
     policy = agent_inference.forward
