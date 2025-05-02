@@ -4,12 +4,12 @@ import numpy as np
 import torch.nn.functional as F
 from torch.distributions import Categorical
 from models.encoder import AtariCNN, ImpalaCNN, ConvSequence
-from models.mlp import MLP, ResidualMLP, ResidualBlock, MultiSkipResidualMLP, MultiSkipResidualBlock
+from models.mlp import MLP, ResidualMLP, ResidualBlock, MultiSkipResidualMLP, MultiSkipResidualBlock, DenseNetMLP, DenseBlock
 from utils.utils import get_act_fn_clss, get_act_fn_functional
 from IPython import embed
 
 def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
-    torch.nn.init.orthogonal_(layer.weight, std)
+    torch.nn.init.orthogonal_(layer.weight, std)    
     torch.nn.init.constant_(layer.bias, bias_const)
     return layer
 
@@ -46,6 +46,8 @@ class BasePQNAgent(nn.Module):
             mlp_clss = ResidualMLP
         elif mlp_type == "multiskip_residual":
             mlp_clss = MultiSkipResidualMLP
+        elif mlp_type == "densenet":
+            mlp_clss = DenseNetMLP
         else:
             raise NotImplementedError(f"Unknown mlp_type: {mlp_type}")
         
@@ -196,7 +198,7 @@ class BasePQNAgent(nn.Module):
 
         # Process MLP layers
         mlp_hook = nn.LayerNorm if self.use_ln else nn.Linear
-        mlp_additional = (ResidualBlock, MultiSkipResidualBlock)
+        mlp_additional = (ResidualBlock, MultiSkipResidualBlock, DenseBlock)
         x, _, mlp_shapes = process_modules(self.trunk.net.children(), x, 'mlp', mlp_hook, mlp_additional)
         layer_shapes.update(mlp_shapes)
 

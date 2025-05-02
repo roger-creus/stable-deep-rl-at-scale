@@ -53,7 +53,7 @@ class Args:
 
     env_id: str = "DemonAttackNoFrameskip-v4"
     """the id of the environment"""
-    total_timesteps: int = 5000000
+    total_timesteps: int = 10000000
     """total timesteps of the experiments"""
     learning_rate: float = 0.0000625
     """the learning rate of the optimizer"""

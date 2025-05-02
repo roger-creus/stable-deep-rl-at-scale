@@ -22,55 +22,49 @@ from tensordict import from_module
 from tensordict.nn import CudaGraphModule
 from torch.distributions.categorical import Distribution
 
+
 Distribution.set_default_validate_args(False)
 torch.set_float32_matmul_precision("high")
 
 from utils.compute_hns import _compute_hns
-from utils.loss_landscape import plot_loss_landscape
-from utils.utils import parse_cnn_size, parse_mlp_depth, parse_mlp_width, get_optimizer, get_grad_norms, get_grad_cosine
-from utils.args import PQNArgs
-from utils.compute_churn import compute_representation_and_q_churn, compute_ranks_from_features, plot_representation_change, plot_activations_range
+from utils.utils import parse_cnn_size, parse_mlp_depth, parse_mlp_width, get_optimizer, get_grad_norms
+from utils.args import PPOArgs
 from utils.wrappers import RecordEpisodeStatistics
-from models.agent import PQNAgent
+from utils.compute_churn import compute_ppo_metrics, compute_ranks_from_features, plot_representation_change, plot_activations_range
+from utils.wrappers import RecordEpisodeStatistics
+from models.agent import SharedTrunkPPOAgent, DecoupledPPOAgent
 
 from IPython import embed
 
-def linear_schedule(start_e: float, end_e: float, duration: int, t: int):
-    slope = (end_e - start_e) / duration
-    return max(slope * t + start_e, end_e)
-
-def lambda_returns(next_obs, next_done, container):
+def gae(next_obs, next_done, container):
+    next_value = get_value(next_obs).reshape(-1)
+    lastgaelam = 0
     nextnonterminals = (~container["dones"]).float().unbind(0)
     vals = container["vals"]
     vals_unbind = vals.unbind(0)
     rewards = container["rewards"].unbind(0)
-    next_value = get_max_value(next_obs)
-    returns = []
-    returns.append(rewards[-1] + args.gamma * next_value * (~next_done).float())
-    i = 1
-    for t in range(args.num_steps - 2, -1, -1):
-        next_value = vals_unbind[t+1]
-        returns.append(
-            rewards[t] + args.gamma * (
-                args.q_lambda * returns[i-1] + (1 - args.q_lambda) * next_value
-            ) * nextnonterminals[t+1]
-        )
-        i+=1
-            
-    returns = container["returns"] = torch.stack(list(reversed(returns)))
+
+    advantages = []
+    nextnonterminal = (~next_done).float()
+    nextvalues = next_value
+    for t in range(args.num_steps - 1, -1, -1):
+        cur_val = vals_unbind[t]
+        delta = rewards[t] + args.gamma * nextvalues * nextnonterminal - cur_val
+        advantages.append(delta + args.gamma * args.gae_lambda * nextnonterminal * lastgaelam)
+        lastgaelam = advantages[-1]
+
+        nextnonterminal = nextnonterminals[t]
+        nextvalues = cur_val
+
+    advantages = container["advantages"] = torch.stack(list(reversed(advantages)))
+    container["returns"] = advantages + vals
     return container
 
 def rollout(obs, done, avg_returns=[], avg_lengths=[]):
     ts = []
     for step in range(args.num_steps):
         torch.compiler.cudagraph_mark_step_begin()
-        q_values = policy(obs)
-        epsilon = linear_schedule(args.start_e, args.end_e, args.exploration_fraction * args.total_timesteps, global_step)
-        random_actions = torch.randint(0, envs.single_action_space.n, (args.num_envs,), device=device)
-        max_actions = torch.argmax(q_values, dim=1)
-        explore = (torch.rand((args.num_envs,), device=device) < epsilon)
-        action = torch.where(explore, random_actions, max_actions)
-
+        action, logprob, _, value = policy(obs=obs)
         next_obs_np, reward, next_done, info = envs.step(action.cpu().numpy())
         next_obs = torch.as_tensor(next_obs_np)
         reward = torch.as_tensor(reward)
@@ -89,8 +83,9 @@ def rollout(obs, done, avg_returns=[], avg_lengths=[]):
             tensordict.TensorDict._new_unsafe(
                 obs=obs,
                 dones=done,
-                vals=q_values[torch.arange(args.num_envs), max_actions].flatten(),
+                vals=value.flatten(),
                 actions=action,
+                logprobs=logprob,
                 rewards=reward,
                 batch_size=(args.num_envs,),
             )
@@ -102,28 +97,67 @@ def rollout(obs, done, avg_returns=[], avg_lengths=[]):
     container = torch.stack(ts, 0).to(device)
     return next_obs, done, container
 
-def update(obs, actions, returns):
+
+def update(obs, actions, logprobs, advantages, returns, vals):
     optimizer.zero_grad()
+    _, newlogprob, entropy, newvalue = agent.get_action_and_value(obs, actions)
+    logratio = newlogprob - logprobs
+    ratio = logratio.exp()
+
+    with torch.no_grad():
+        old_approx_kl = (-logratio).mean()
+        approx_kl = ((ratio - 1) - logratio).mean()
+        clipfrac = ((ratio - 1.0).abs() > args.clip_coef).float().mean()
+
+    if args.norm_adv:
+        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+
+    # Policy loss
+    pg_loss1 = -advantages * ratio
+    pg_loss2 = -advantages * torch.clamp(ratio, 1 - args.clip_coef, 1 + args.clip_coef)
+    pg_loss = torch.max(pg_loss1, pg_loss2).mean()
+
+    # Value loss
+    newvalue = newvalue.view(-1)
+    if args.clip_vloss:
+        v_loss_unclipped = (newvalue - returns) ** 2
+        v_clipped = vals + torch.clamp(
+            newvalue - vals,
+            -args.clip_coef,
+            args.clip_coef,
+        )
+        v_loss_clipped = (v_clipped - returns) ** 2
+        v_loss_max = torch.max(v_loss_unclipped, v_loss_clipped)
+        v_loss = 0.5 * v_loss_max.mean()
+    else:
+        v_loss = 0.5 * ((newvalue - returns) ** 2).mean()
+
+    entropy_loss = entropy.mean()
+    loss = pg_loss - args.ent_coef * entropy_loss + v_loss * args.vf_coef
+
+    loss.backward()
     
-    old_representation, per_layer_representations = agent.get_representation(obs, per_layer=True)
-    old_val = agent.get_Q(old_representation)
-    old_val_gathered = old_val.gather(1, actions.unsqueeze(1)).squeeze(1)
-    q_loss = F.mse_loss(old_val_gathered, returns)
-    q_loss.backward()
+    # Get gradient norms
+    try:
+        grad_norms = get_grad_norms(agent)
+    except Exception as e:
+        print(f"Failed to compute grad metrics: {e}")
+        grad_norms = {}
     
     gn = nn.utils.clip_grad_norm_(agent.parameters(), args.max_grad_norm)
     optimizer.step()
-    return q_loss.detach(), gn, per_layer_representations
+
+    return approx_kl, v_loss.detach(), pg_loss.detach(), entropy_loss.detach(), old_approx_kl, clipfrac, gn, grad_norms
 
 update = tensordict.nn.TensorDictModule(
     update,
-    in_keys=["obs", "actions", "returns"],
-    out_keys=["td_loss", "gn", "per_layer_representations"],
+    in_keys=["obs", "actions", "logprobs", "advantages", "returns", "vals"],
+    out_keys=["approx_kl", "v_loss", "pg_loss", "entropy_loss", "old_approx_kl", "clipfrac", "gn", "grad_norms"],
 )
 
 if __name__ == "__main__":
     ####### Argument Parsing #######
-    args = tyro.cli(PQNArgs)
+    args = tyro.cli(PPOArgs)
     
     batch_size = int(args.num_envs * args.num_steps)
     args.minibatch_size = batch_size // args.num_minibatches
@@ -133,13 +167,16 @@ if __name__ == "__main__":
     args.log_iterations = np.linspace(0, args.num_iterations, num=args.num_logs, endpoint=False, dtype=int)
     args.log_iterations = np.unique(args.log_iterations)
     args.log_iterations = np.insert(args.log_iterations, 0, 1)
-    args.log_iterations_img = np.linspace(0, args.num_iterations, num=args.num_img_logs, dtype=int)
+    print(f"Will log {len(args.log_iterations)} times")
+    
+    args.log_iterations_img = np.linspace(0, args.num_iterations, num=args.num_img_logs, endpoint=False, dtype=int)
     args.log_iterations_img = np.unique(args.log_iterations_img)
     args.log_iterations_img = np.insert(args.log_iterations_img, 0, 1)
+    print(f"Will log images {len(args.log_iterations_img)} times")
     
-    run_name = f"PQN_ENV:{args.env_id}_OPTIM:{args.optimizer}_CNN:{args.cnn_type}_CNN.SIZE:{args.cnn_size}_MLP:{args.mlp_type}_MLP.WIDTH:{args.mlp_width}_MLP.DEPTH:{args.mlp_depth}_LN:{args.use_ln}_SPECTRAL:{args.use_spectral_norm}_ACTFN:{args.activation_fn}_EPOCHS:{args.update_epochs}_SEED:{args.seed}"
+    run_name = f"PPO_ENV:{args.env_id}_OPTIM:{args.optimizer}_CNN:{args.cnn_type}_CNN.SIZE:{args.cnn_size}_MLP:{args.mlp_type}_MLP.WIDTH:{args.mlp_width}_MLP.DEPTH:{args.mlp_depth}_LN:{args.use_ln}_ACTFN:{args.activation_fn}_EPOCHS:{args.update_epochs}_SEED:{args.seed}"
     args.run_name = run_name
-    
+
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
@@ -184,13 +221,13 @@ if __name__ == "__main__":
         "trunk_num_layers": trunk_num_layers,
         "device": device,
     }
-    agent = PQNAgent(**agent_cfg)
-    old_agent = PQNAgent(**agent_cfg)
-    print(agent)
-    if not hasattr(agent, "prev_grad_dirs"):
-        agent.prev_grad_dirs = {}
+    agent_clss = SharedTrunkPPOAgent if args.shared_trunk else DecoupledPPOAgent
     
-    agent_inference = PQNAgent(**agent_cfg)
+    agent = agent_clss(**agent_cfg)
+    old_agent = agent_clss(**agent_cfg)
+    print(agent)
+    
+    agent_inference = agent_clss(**agent_cfg)
     agent_inference_p = from_module(agent).data
     agent_inference_p.to_module(agent_inference)
 
@@ -200,20 +237,23 @@ if __name__ == "__main__":
         args.learning_rate /= 3.0
         
     optimizer_clss = get_optimizer(args.optimizer)
+    optim_kwargs = {"eps": 1.0e-5} if "adam" in args.optimizer else {}
+    
     optimizer = optimizer_clss(
         agent.parameters(),
-        lr=torch.tensor(args.learning_rate, device=device),
+        lr=args.learning_rate,
+        **optim_kwargs,
     )
-    print(optimizer)
 
     ####### Executables #######
-    policy = agent_inference.forward
-    get_max_value = agent_inference.get_max_value
+    policy = agent_inference.get_action_and_value
+    get_value = agent_inference.get_value
 
+    # Compile policy
     if args.compile:
         mode = None
         policy = torch.compile(policy, mode=mode)
-        lambda_returns = torch.compile(lambda_returns, fullgraph=True, mode=mode)
+        gae = torch.compile(gae, fullgraph=True, mode=mode)
         update = torch.compile(update, mode=mode)
 
     if args.cudagraphs:
@@ -224,15 +264,6 @@ if __name__ == "__main__":
     prev_container = None
     avg_returns = deque(maxlen=20)
     avg_lengths = deque(maxlen=20)
-
-    layer_shapes_ = agent.get_layer_shapes()
-    mu_representations = {
-        k: torch.zeros(v, device=device) for k, v in layer_shapes_.items()
-    }
-    std_representations = {
-        k: torch.ones(v, device=device) for k, v in layer_shapes_.items()
-    }
-    
     global_step = 0
     container_local = None
     next_obs = torch.tensor(envs.reset(), device=device, dtype=torch.uint8)
@@ -241,6 +272,9 @@ if __name__ == "__main__":
     pbar = tqdm.tqdm(range(1, args.num_iterations + 1))
     desc = ""
     global_step_burnin = None
+    start_time = None
+    log_dict = {}
+    
     for iteration in pbar:
         if iteration == args.measure_burnin:
             global_step_burnin = global_step
@@ -250,100 +284,72 @@ if __name__ == "__main__":
         if args.anneal_lr:
             frac = 1.0 - (iteration - 1.0) / args.num_iterations
             lrnow = frac * args.learning_rate
-            optimizer.param_groups[0]["lr"].copy_(lrnow)
+            optimizer.param_groups[0]["lr"] = lrnow
 
         # collect rollout
         torch.compiler.cudagraph_mark_step_begin()
         next_obs, next_done, container = rollout(next_obs, next_done, avg_returns=avg_returns, avg_lengths=avg_lengths)
         global_step += container.numel()
-        
-        # compute lambda returns
-        torch.compiler.cudagraph_mark_step_begin()
-        container = lambda_returns(next_obs, next_done, container)
+
+        # compute gae
+        container = gae(next_obs, next_done, container)
         container_flat = container.view(-1)
 
         # update
+        clipfracs = []
+        kls= []
         gns = []
         old_agent.load_state_dict(agent.state_dict())
+        
+        # Track gradient metrics
+        avg_grad_norms = {}
+        
         for epoch in range(args.update_epochs):
-            if epoch == args.update_epochs - 1:
-                grad_norms_accum = {}
-                grad_cosines_accum = {}
-                sample_count = 0
-
             b_inds = torch.randperm(container_flat.shape[0], device=device).split(args.minibatch_size)
-            
             for b_idx, b in enumerate(b_inds):
                 container_local = container_flat[b]
-                torch.compiler.cudagraph_mark_step_begin()
                 out = update(container_local, tensordict_out=tensordict.TensorDict())
+                
+                clipfracs.append(out["clipfrac"].cpu().numpy())
+                kls.append(out["approx_kl"].cpu().numpy())
                 gns.append(out["gn"].cpu().numpy())
                 
-                # Log loss landscape (only once: first minibatch of first epoch)
-                if (epoch == 0 and b_idx == 0 and global_step_burnin is not None and  iteration in args.log_iterations_img and prev_container is not None):
-                    try:
-                        with torch.no_grad():
-                            max_to_keep = min(512, len(container_flat))
-                        cntner_loss_landscape = container_flat[torch.randperm(len(container_flat))[:max_to_keep]]
-                        batch_obs = cntner_loss_landscape['obs']
-                        batch_actions = cntner_loss_landscape['actions']
-                        batch_returns = cntner_loss_landscape['returns']
-                        plot_loss_landscape(old_agent, batch_obs, batch_actions, batch_returns, grid_range=1.0, num_points=21, global_step=global_step)
-                    except Exception as e:
-                        print(f"Failed to plot loss landscape: {e}")
-                
-                if (epoch == 0 and b_idx == 0 and global_step_burnin is not None and iteration in args.log_iterations):
-                    try:
-                        with torch.no_grad():
-                            max_to_keep = min(2048, len(container_flat))
-                            cntner_churn = container_flat[torch.randperm(len(container_flat))[:max_to_keep]]
-                            churn_stats = compute_representation_and_q_churn(agent, old_agent, cntner_churn["obs"])
-                            
-                        # Update per-layer representation stats.
-                        mu_representations = {
-                            k: 0.99 * mu_representations[k] + 0.01 * v.mean(0)
-                            for k, v in out["per_layer_representations"].items()
-                        }
-                        std_representations = {
-                            k: 0.99 * std_representations[k] + 0.01 * v.std(0)
-                            for k, v in out["per_layer_representations"].items()
-                        }
-                    except Exception as e:
-                        print(f"Failed to compute representation and q churn: {e}")
-                        
-                    try:
-                        ranks = compute_ranks_from_features(agent, cntner_churn["obs"])
-                    except:
-                        ranks = {}
-                
-                # In the last epoch, compute grad metrics for every minibatch.
-                if (epoch == args.update_epochs - 1 and global_step_burnin is not None and  iteration in args.log_iterations):
-                    try:
-                        with torch.no_grad():
-                            batch_grad_norms = get_grad_norms(agent, use_ln=args.use_ln)
-                        batch_grad_cosine = get_grad_cosine(agent, use_ln=args.use_ln)
-                        sample_count += 1
-                        for key, value in batch_grad_norms.items():
-                            grad_norms_accum.setdefault(key, []).append(value)
-                        for key, value in batch_grad_cosine.items():
-                            grad_cosines_accum.setdefault(key, []).append(value if value is not None else 0)
-                    except Exception as e:
-                        print(f"Failed to compute grad metrics: {e}")
+                # Accumulate gradient metrics
+                for key, value in out["grad_norms"].items():
+                    if key not in avg_grad_norms:
+                        avg_grad_norms[key] = []
+                    avg_grad_norms[key].append(value.item())
 
-        # After finishing the last epoch, average and log the gradient metrics.
-        if (global_step_burnin is not None and iteration in args.log_iterations and sample_count > 0):
-            try:
-                avg_grad_norms = {k: np.mean(v_list) for k, v_list in grad_norms_accum.items()}
-                avg_grad_cosines = {k: np.mean(v_list) for k, v_list in grad_cosines_accum.items()}
-                log_dict = {}
-                for key, value in avg_grad_norms.items():
-                    log_dict[f"grad_norms/{key}"] = value
-                for key, value in avg_grad_cosines.items():
-                    log_dict[f"grad_cosines/{key}"] = value
-            except Exception as e:
-                print(f"Failed to compute grad metrics: {e}")
+                
+                if args.target_kl is not None and out["approx_kl"] > args.target_kl:
+                    break
+        
+                # log churn stats
+                if epoch == 0 and b_idx == 0 and global_step_burnin is not None and iteration in args.log_iterations:
+                    with torch.no_grad():
+                        max_to_keep = min(4096, len(container_flat))
+                        cntner_churn = container_flat[torch.randperm(len(container_flat))[:max_to_keep]]
+                        
+                        # Compute metrics and ranks
+                        try:
+                            churn_stats = compute_ppo_metrics(agent, container_flat["obs"])
+                        except Exception as e:
+                            print(f"Failed to compute metrics: {e}")
+                            churn_stats = {}
                             
-        # log representation change
+                        try:
+                            ranks = compute_ranks_from_features(agent, container_flat["obs"])
+                        except Exception as e:
+                            print(f"Failed to compute ranks: {e}")
+                            ranks = {}
+                            
+                        # Process gradient metrics
+                        log_dict = {}
+                        for key, values in avg_grad_norms.items():
+                            log_dict[f"grad_norms/{key}"] = np.mean(values)
+        
+        # log images                 
+        # learning dynamics change per iteration
         if global_step_burnin is not None and iteration in args.log_iterations_img and prev_container is not None:
             try:
                 plot_representation_change(
@@ -355,15 +361,26 @@ if __name__ == "__main__":
                     num_points=300,
                     name="learning_dynamics_change_per_iteration",
                 )
-            except Exception as e:
-                print(f"Failed to plot representation change: {e}")
                 
+                # Add activation range plots similar to PQN
+                try:
+                    plot_activations_range(
+                        agent,
+                        container["obs"],
+                        global_step=global_step,
+                    )
+                except Exception as e:
+                    print(f"Failed to plot activations range: {e}")
+            except Exception as e:
+                print(f"Failed to compute learning dynamics plot per iteration: {e}")
+
         # logging
         if global_step_burnin is not None and iteration in args.log_iterations:
             cur_time = time.time()
             speed = (global_step - global_step_burnin) / (cur_time - start_time)
             global_step_burnin = global_step
             start_time = cur_time
+
             avg_returns_t = torch.tensor(avg_returns).mean()
             avg_lengths_t = torch.tensor(avg_lengths).mean()
             pbar.set_description(
@@ -372,7 +389,7 @@ if __name__ == "__main__":
                 f"avg.ep.return: {avg_returns_t: 4.2f}, "
                 f"avg.ep.length: {avg_lengths_t: 4.2f}"
             )
-        
+
             with torch.no_grad():
                 ep_return = np.array(avg_returns).mean() if len(avg_returns) > 0 else 0
                 ep_length = np.array(avg_lengths).mean() if len(avg_lengths) > 0 else 0
@@ -381,14 +398,19 @@ if __name__ == "__main__":
                     "charts/episode_return": ep_return,
                     "charts/episode_length": ep_length,
                     "charts/hns": _compute_hns(args.env_id, ep_return),
-                    "losses/lambda_returns": container["returns"].mean(),
+                    "losses/entropy": out["entropy_loss"].mean(),
+                    "losses/pg_loss": out["pg_loss"].mean(),
+                    "losses/v_loss": out["v_loss"].mean(),
+                    "losses/approx_kl": np.mean(kls),
+                    "losses/clipfrac": np.mean(clipfracs),
+                    "losses/logprobs": container["logprobs"].mean(),
+                    "losses/advantages": container["advantages"].mean(),
+                    "losses/returns": container["returns"].mean(),
                     "losses/q_values": container["vals"].mean(),
-                    "losses/td_loss": out["td_loss"],
                     "losses/gradient_norm": np.mean(gns),
-                    "schedule/epsilon": linear_schedule(args.start_e, args.end_e, args.exploration_fraction * args.total_timesteps, global_step),
                     "schedule/lr": optimizer.param_groups[0]["lr"],
-                    
                 }
+                
                 try:
                     logs = {**logs, **churn_stats, **ranks, **log_dict}
                 except Exception as e:
@@ -397,7 +419,7 @@ if __name__ == "__main__":
             wandb.log(
                 {"charts/global_step": global_step, **logs}, step=global_step
             )
-            
+        
         # keep old batch for plots
         if iteration % 10 == 0:
             prev_container = container
