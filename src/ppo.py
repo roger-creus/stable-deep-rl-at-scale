@@ -218,6 +218,7 @@ if __name__ == "__main__":
         "cnn_channels": cnn_channels,
         "mlp_type": args.mlp_type,
         "trunk_hidden_size": trunk_hidden_size,
+        "trunk_output_size": 512,
         "trunk_num_layers": trunk_num_layers,
         "device": device,
     }
@@ -237,13 +238,22 @@ if __name__ == "__main__":
         args.learning_rate /= 3.0
         
     optimizer_clss = get_optimizer(args.optimizer)
-    optim_kwargs = {"eps": 1.0e-5} if "adam" in args.optimizer else {}
+    opt_kwargs = {}
+    if args.optimizer == "shampoo":
+        opt_kwargs = {
+            "update_freq": 75
+        }
+    elif "adam" in args.optimizer:
+        opt_kwargs = {"eps": 1.0e-5}
+    else:
+        opt_kwargs = {}
     
     optimizer = optimizer_clss(
         agent.parameters(),
         lr=args.learning_rate,
-        **optim_kwargs,
+        **opt_kwargs,
     )
+    print(optimizer)
 
     ####### Executables #######
     policy = agent_inference.get_action_and_value
@@ -330,18 +340,18 @@ if __name__ == "__main__":
                         max_to_keep = min(4096, len(container_flat))
                         cntner_churn = container_flat[torch.randperm(len(container_flat))[:max_to_keep]]
                         
-                        # Compute metrics and ranks
-                        try:
-                            churn_stats = compute_ppo_metrics(agent, container_flat["obs"])
-                        except Exception as e:
-                            print(f"Failed to compute metrics: {e}")
-                            churn_stats = {}
+                        # # Compute metrics and ranks
+                        # try:
+                        #     churn_stats = compute_ppo_metrics(agent, container_flat["obs"])
+                        # except Exception as e:
+                        #     print(f"Failed to compute metrics: {e}")
+                        #     churn_stats = {}
                             
-                        try:
-                            ranks = compute_ranks_from_features(agent, container_flat["obs"])
-                        except Exception as e:
-                            print(f"Failed to compute ranks: {e}")
-                            ranks = {}
+                        # try:
+                        #     ranks = compute_ranks_from_features(agent, container_flat["obs"])
+                        # except Exception as e:
+                        #     print(f"Failed to compute ranks: {e}")
+                        #     ranks = {}
                             
                         # Process gradient metrics
                         log_dict = {}
@@ -350,29 +360,29 @@ if __name__ == "__main__":
         
         # log images                 
         # learning dynamics change per iteration
-        if global_step_burnin is not None and iteration in args.log_iterations_img and prev_container is not None:
-            try:
-                plot_representation_change(
-                    agent,
-                    old_agent,
-                    container["obs"],
-                    prev_container["obs"],
-                    global_step=global_step,
-                    num_points=300,
-                    name="learning_dynamics_change_per_iteration",
-                )
+        # if global_step_burnin is not None and iteration in args.log_iterations_img and prev_container is not None:
+        #     try:
+        #         plot_representation_change(
+        #             agent,
+        #             old_agent,
+        #             container["obs"],
+        #             prev_container["obs"],
+        #             global_step=global_step,
+        #             num_points=300,
+        #             name="learning_dynamics_change_per_iteration",
+        #         )
                 
-                # Add activation range plots similar to PQN
-                try:
-                    plot_activations_range(
-                        agent,
-                        container["obs"],
-                        global_step=global_step,
-                    )
-                except Exception as e:
-                    print(f"Failed to plot activations range: {e}")
-            except Exception as e:
-                print(f"Failed to compute learning dynamics plot per iteration: {e}")
+        #         # Add activation range plots similar to PQN
+        #         try:
+        #             plot_activations_range(
+        #                 agent,
+        #                 container["obs"],
+        #                 global_step=global_step,
+        #             )
+        #         except Exception as e:
+        #             print(f"Failed to plot activations range: {e}")
+        #     except Exception as e:
+        #         print(f"Failed to compute learning dynamics plot per iteration: {e}")
 
         # logging
         if global_step_burnin is not None and iteration in args.log_iterations:
@@ -411,10 +421,10 @@ if __name__ == "__main__":
                     "schedule/lr": optimizer.param_groups[0]["lr"],
                 }
                 
-                try:
-                    logs = {**logs, **churn_stats, **ranks, **log_dict}
-                except Exception as e:
-                    print(f"Failed to log metrics: {e}")
+                # try:
+                #     logs = {**logs, **churn_stats, **ranks, **log_dict}
+                # except Exception as e:
+                #     print(f"Failed to log metrics: {e}")
 
             wandb.log(
                 {"charts/global_step": global_step, **logs}, step=global_step

@@ -372,7 +372,6 @@ class SharedTrunkPPOAgent(nn.Module):
         self.use_ln = use_ln
         act_ = get_act_fn_clss(activation_fn)
         self.act_fn_F = get_act_fn_functional(activation_fn)
-        mlp_clss = ResidualMLP if mlp_type == "residual" else MLP
         
         if cnn_type == "atari":
             self.network = AtariCNN(
@@ -390,6 +389,18 @@ class SharedTrunkPPOAgent(nn.Module):
             )
         else:
             raise NotImplementedError(f"Unknown cnn_type: {cnn_type}")
+        
+        # Choose the MLP class.
+        if mlp_type == "default":
+            mlp_clss = MLP
+        elif mlp_type == "residual":
+            mlp_clss = ResidualMLP
+        elif mlp_type == "multiskip_residual":
+            mlp_clss = MultiSkipResidualMLP
+        elif mlp_type == "densenet":
+            mlp_clss = DenseNetMLP
+        else:
+            raise NotImplementedError(f"Unknown mlp_type: {mlp_type}")
         
         # compute output size of network
         with torch.no_grad():
