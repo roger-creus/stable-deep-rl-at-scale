@@ -85,6 +85,10 @@ def get_optimizer(optimizer):
         return Kron
     elif optimizer == "shampoo":
         return optim.Shampoo
+    elif optimizer == "apollo":
+        return optim.Apollo
+    elif optimizer == "adabelief":
+        return optim.AdaBelief
     else:
         raise ValueError(f"Unknown optimizer: {optimizer}") 
 
