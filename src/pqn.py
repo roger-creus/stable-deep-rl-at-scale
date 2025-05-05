@@ -300,29 +300,29 @@ if __name__ == "__main__":
                 #     except Exception as e:
                 #         print(f"Failed to plot loss landscape: {e}")
                 
-                # if (epoch == 0 and b_idx == 0 and global_step_burnin is not None and iteration in args.log_iterations):
-                #     try:
-                #         with torch.no_grad():
-                #             max_to_keep = min(2048, len(container_flat))
-                #             cntner_churn = container_flat[torch.randperm(len(container_flat))[:max_to_keep]]
-                #             churn_stats = compute_representation_and_q_churn(agent, old_agent, cntner_churn["obs"])
+                if (epoch == 0 and b_idx == 0 and global_step_burnin is not None and iteration in args.log_iterations):
+                    try:
+                        with torch.no_grad():
+                            max_to_keep = min(2048, len(container_flat))
+                            cntner_churn = container_flat[torch.randperm(len(container_flat))[:max_to_keep]]
+                            churn_stats = compute_representation_and_q_churn(agent, old_agent, cntner_churn["obs"])
                             
-                #         # Update per-layer representation stats.
-                #         mu_representations = {
-                #             k: 0.99 * mu_representations[k] + 0.01 * v.mean(0)
-                #             for k, v in out["per_layer_representations"].items()
-                #         }
-                #         std_representations = {
-                #             k: 0.99 * std_representations[k] + 0.01 * v.std(0)
-                #             for k, v in out["per_layer_representations"].items()
-                #         }
-                #     except Exception as e:
-                #         print(f"Failed to compute representation and q churn: {e}")
+                        # Update per-layer representation stats.
+                        mu_representations = {
+                            k: 0.99 * mu_representations[k] + 0.01 * v.mean(0)
+                            for k, v in out["per_layer_representations"].items()
+                        }
+                        std_representations = {
+                            k: 0.99 * std_representations[k] + 0.01 * v.std(0)
+                            for k, v in out["per_layer_representations"].items()
+                        }
+                    except Exception as e:
+                        print(f"Failed to compute representation and q churn: {e}")
                         
-                #     try:
-                #         ranks = compute_ranks_from_features(agent, cntner_churn["obs"])
-                #     except:
-                #         ranks = {}
+                    try:
+                        ranks = compute_ranks_from_features(agent, cntner_churn["obs"])
+                    except:
+                        ranks = {}
                 
                 # In the last epoch, compute grad metrics for every minibatch.
                 if (epoch == args.update_epochs - 1 and global_step_burnin is not None and  iteration in args.log_iterations):
@@ -397,10 +397,8 @@ if __name__ == "__main__":
                     "schedule/lr": optimizer.param_groups[0]["lr"],
                     
                 }
-                try:
-                    logs = {**logs, **log_dict}
-                except Exception as e:
-                    print(f"Failed to log metrics: {e}")
+                
+                logs = {**logs, **log_dict, **churn_stats, **ranks}
 
             wandb.log(
                 {"charts/global_step": global_step, **logs}, step=global_step

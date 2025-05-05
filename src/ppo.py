@@ -337,21 +337,21 @@ if __name__ == "__main__":
                 # log churn stats
                 if epoch == 0 and b_idx == 0 and global_step_burnin is not None and iteration in args.log_iterations:
                     with torch.no_grad():
-                        max_to_keep = min(4096, len(container_flat))
+                        max_to_keep = min(2048, len(container_flat))
                         cntner_churn = container_flat[torch.randperm(len(container_flat))[:max_to_keep]]
                         
-                        # # Compute metrics and ranks
-                        # try:
-                        #     churn_stats = compute_ppo_metrics(agent, container_flat["obs"])
-                        # except Exception as e:
-                        #     print(f"Failed to compute metrics: {e}")
-                        #     churn_stats = {}
+                        #Compute metrics and ranks
+                        try:
+                            churn_stats = compute_ppo_metrics(agent, container_flat["obs"])
+                        except Exception as e:
+                            print(f"Failed to compute metrics: {e}")
+                            churn_stats = {}
                             
-                        # try:
-                        #     ranks = compute_ranks_from_features(agent, container_flat["obs"])
-                        # except Exception as e:
-                        #     print(f"Failed to compute ranks: {e}")
-                        #     ranks = {}
+                        try:
+                            ranks = compute_ranks_from_features(agent, container_flat["obs"])
+                        except Exception as e:
+                            print(f"Failed to compute ranks: {e}")
+                            ranks = {}
                             
                         # Process gradient metrics
                         log_dict = {}
@@ -421,10 +421,7 @@ if __name__ == "__main__":
                     "schedule/lr": optimizer.param_groups[0]["lr"],
                 }
                 
-                # try:
-                #     logs = {**logs, **churn_stats, **ranks, **log_dict}
-                # except Exception as e:
-                #     print(f"Failed to log metrics: {e}")
+                logs = {**logs, **churn_stats, **ranks, **log_dict}
 
             wandb.log(
                 {"charts/global_step": global_step, **logs}, step=global_step
