@@ -10,13 +10,13 @@ import tyro
 from dataclasses import dataclass
 from torch.utils.tensorboard import SummaryWriter
 import torch.nn.functional as F
-from torch.distributions.categorical import Categorical
+
 from utils.craftax_utils import make_craftax_env, write_row_csv, make_training_csv_craftax_classic, make_training_csv_craftax
-from utils.utils import parse_mlp_width, parse_mlp_depth, get_optimizer
+from utils.utils import parse_mlp_width, parse_mlp_depth, get_grad_norms, get_optimizer
 from models.agent import MLP, ResidualMLP, MultiSkipResidualMLP
 
 @dataclass
-class PPO_Craftax_Args:
+class PQN_Craftax_Args:
     exp_name: str = os.path.basename(__file__)[: -len(".py")]
     """the name of this experiment"""
     seed: int = 1
@@ -27,7 +27,7 @@ class PPO_Craftax_Args:
     """if toggled, cuda will be enabled by default"""
     track: bool = False
     """if toggled, this experiment will be tracked with Weights and Biases"""
-    wandb_project_name: str = "ppo_craftax"
+    wandb_project_name: str = "pqn_lstm_craftax"
     """the wandb's project name"""
     wandb_entity: str = "rogercreus"
     """the entity (team) of wandb's project"""
@@ -47,30 +47,18 @@ class PPO_Craftax_Args:
     """Toggle learning rate annealing for policy and value networks"""
     gamma: float = 0.99
     """the discount factor gamma"""
-    gae_lambda: float = 0.95
+    q_lambda: float = 0.65
     """the lambda for the general advantage estimation"""
     num_minibatches: int = 8
-    """the number of mini-batches"""
+    """the number of mini-btches"""
     update_epochs: int = 2
     """the K epochs to update the policy"""
-    norm_adv: bool = True
-    """Toggles advantages normalization"""
-    clip_coef: float = 0.1
-    """the surrogate clipping coefficient"""
-    clip_vloss: bool = True
-    """Toggles whether or not to use a clipped loss for the value function, as per the paper."""
-    ent_coef: float = 0.01
-    """coefficient of the entropy"""
-    vf_coef: float = 0.5
-    """coefficient of the value function"""
     max_grad_norm: float = 10.0
     """the maximum norm for the gradient clipping"""
-    target_kl: float = None
-    """the target KL divergence threshold"""
     log_every: int = 10
     """how often to log the training progress (every how many episodes)"""
-    
-    optimizer: str = "adam" # adam or kron
+
+    optimizer: str = "radam" # radam, kron
     """the optimizer to use"""
     mlp_width: str = "small"
     """the width of the MLP"""
@@ -78,9 +66,9 @@ class PPO_Craftax_Args:
     """the depth of the MLP"""
     mlp_type: str = "default"
     """the type of MLP"""
-    use_ln: bool = False
+    use_ln: bool = True
     """whether to use layer normalization"""
-
+    
     # to be filled in runtime
     batch_size: int = 0
     """the batch size (computed in runtime)"""
@@ -88,13 +76,20 @@ class PPO_Craftax_Args:
     """the mini-batch size (computed in runtime)"""
     num_iterations: int = 0
     """the number of iterations (computed in runtime)"""
+    
+    start_e: float = 1
+    """the starting epsilon for exploration"""
+    end_e: float = 0.005
+    """the ending epsilon for exploration"""
+    exploration_fraction: float = 0.10
+    """the fraction of `total-timesteps` it takes from start-e to go end-e"""
 
 def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
     torch.nn.init.orthogonal_(layer.weight, std)
     torch.nn.init.constant_(layer.bias, bias_const)
     return layer
 
-class PPO_Craftax_Agent(nn.Module):
+class PQN_Craftax_Agent(nn.Module):
     def __init__(self, envs, mlp_type, mlp_width, mlp_depth, use_ln, device):
         super().__init__()
         
@@ -117,30 +112,61 @@ class PPO_Craftax_Agent(nn.Module):
             use_ln=use_ln,
             device=device,
             last_act=True,
-            activation_fn="tanh",
         )
      
-        self.critic = layer_init(nn.Linear(512, 1), std=1.0)
-        self.actor = layer_init(nn.Linear(512, envs.single_action_space.n), std=1.0)
+        self.lstm = nn.LSTM(512, 128)
+        for name, param in self.lstm.named_parameters():
+            if "bias" in name:
+                nn.init.constant_(param, 0)
+            elif "weight" in name:
+                nn.init.orthogonal_(param, 1.0)
+        
+        self.post_lstm = nn.Sequential(
+            layer_init(nn.Linear(128, 128)),
+            nn.LayerNorm(128),
+            nn.ReLU(),
+        )   
+        
+        self.q_func = nn.Sequential(
+            layer_init(nn.Linear(128, envs.single_action_space.n))
+        )
 
-    def get_value(self, x):
+    def get_states(self, x, lstm_state, done):
         hidden = self.network(x)
-        return self.critic(hidden)
 
-    def get_action_and_value(self, x, action=None):
-        hidden = self.network(x)
-        logits = self.actor(hidden)
-        probs = Categorical(logits=logits)
-        if action is None:
-            action = probs.sample()
-        return action, probs.log_prob(action), probs.entropy(), self.critic(hidden)
+        # LSTM logic
+        batch_size = lstm_state[0].shape[1]
+        hidden = hidden.reshape((-1, batch_size, self.lstm.input_size))
+        done = done.reshape((-1, batch_size))
+        new_hidden = []
+        for h, d in zip(hidden, done):
+            h, lstm_state = self.lstm(
+                h.unsqueeze(0),
+                (
+                    (1.0 - d.float()).view(1, -1, 1) * lstm_state[0],
+                    (1.0 - d.float()).view(1, -1, 1) * lstm_state[1],
+                ),
+            )
+            new_hidden += [h]
+        new_hidden = torch.flatten(torch.cat(new_hidden), 0, 1)
+        new_hidden = self.post_lstm(new_hidden)
+        return new_hidden, lstm_state
+
+    def forward(self, x, lstm_state, done):
+        hidden, lstm_state = self.get_states(x, lstm_state, done)
+        qvals = self.q_func(hidden)
+        return qvals, lstm_state
+
+def linear_schedule(start_e: float, end_e: float, duration: int, t: int):
+    slope = (end_e - start_e) / duration
+    return max(slope * t + start_e, end_e)
 
 if __name__ == "__main__":
-    args = tyro.cli(PPO_Craftax_Args)
+    args = tyro.cli(PQN_Craftax_Args)
     args.batch_size = int(args.num_envs * args.num_steps)
     args.minibatch_size = int(args.batch_size // args.num_minibatches)
     args.num_iterations = args.total_timesteps // args.batch_size
-    run_name = args.exp_name = f"algo:PPO_ENV:{args.env_id}_OPTIM:{args.optimizer}_MLP.TYPE:{args.mlp_type}_MLP.DEPTH:{args.mlp_depth}_MLP.WIDTH:{args.mlp_width}_SEED:{args.seed}"
+    run_name = args.exp_name = f"algo:PQNLSTM_ENV:{args.env_id}_OPTIM:{args.optimizer}_MLP.TYPE:{args.mlp_type}_MLP.DEPTH:{args.mlp_depth}_MLP.WIDTH:{args.mlp_width}_LN:{args.use_ln}_SEED:{args.seed}"
     
     ################## Logging setup ##################
     if args.track:
@@ -189,21 +215,20 @@ if __name__ == "__main__":
     num_layers = parse_mlp_depth(args.mlp_depth, args.mlp_type)
 
     # agent setup
-    agent = PPO_Craftax_Agent(envs, args.mlp_type, layer_width, num_layers, args.use_ln, device).to(device)
+    q_network = PQN_Craftax_Agent(envs, args.mlp_type, layer_width, num_layers, args.use_ln, device).to(device)
     print("-------------")
-    print(agent)
+    print(q_network)
     
     optimizer_cls = get_optimizer(args.optimizer)
     if args.optimizer == "kron":
-        optimizer = optimizer_cls(agent.parameters(), lr=args.learning_rate / 1.25)
+        optimizer = optimizer_cls(q_network.parameters(), lr=args.learning_rate / 1.25)
     else:
-        optimizer = optimizer_cls(agent.parameters(), lr=args.learning_rate)
+        optimizer = optimizer_cls(q_network.parameters(), lr=args.learning_rate)
 
     # ALGO Logic: Storage setup
     obs_shape = envs.single_observation_space.shape
     obs = torch.zeros((args.num_steps, args.num_envs) + obs_shape).to(device)
     actions = torch.zeros((args.num_steps, args.num_envs) + envs.single_action_space.shape).to(device)
-    logprobs = torch.zeros((args.num_steps, args.num_envs)).to(device)
     rewards = torch.zeros((args.num_steps, args.num_envs)).to(device)
     dones = torch.zeros((args.num_steps, args.num_envs)).to(device)
     values = torch.zeros((args.num_steps, args.num_envs)).to(device)
@@ -215,7 +240,13 @@ if __name__ == "__main__":
     next_done = torch.zeros(args.num_envs).to(device)
     episode_count = 0
     
+    next_lstm_state = (
+        torch.zeros(1, args.num_envs, q_network.lstm.hidden_size).to(device),
+        torch.zeros(1, args.num_envs, q_network.lstm.hidden_size).to(device),
+    )
+
     for iteration in range(1, args.num_iterations + 1):
+        initial_lstm_state = (next_lstm_state[0].clone(), next_lstm_state[1].clone())
 
         # Annealing the rate if instructed to do so.
         if args.anneal_lr:
@@ -227,13 +258,18 @@ if __name__ == "__main__":
             global_step += args.num_envs
             obs[step] = next_obs
             dones[step] = next_done
+
+            epsilon = linear_schedule(args.start_e, args.end_e, args.exploration_fraction * args.total_timesteps, global_step)
+            random_actions = torch.randint(0, envs.single_action_space.n, (args.num_envs,)).to(device)
             
-            # ALGO LOGIC: action logic
             with torch.no_grad():
-                action, logprob, _, value = agent.get_action_and_value(next_obs)
-                values[step] = value.flatten()
+                q_values, next_lstm_state = q_network(next_obs, next_lstm_state, next_done)
+                max_actions = torch.argmax(q_values, dim=1)
+                values[step] = q_values[torch.arange(args.num_envs), max_actions].flatten()
+
+            explore = (torch.rand((args.num_envs,)).to(device) < epsilon)
+            action = torch.where(explore, random_actions, max_actions)
             actions[step] = action
-            logprobs[step] = logprob
 
             # TRY NOT TO MODIFY: execute the game and log data.
             next_obs, reward, terminations, truncations, infos = envs.step(action)
@@ -259,99 +295,60 @@ if __name__ == "__main__":
                             writer.add_scalar(f"Achievements/{k.split('/')[-1]}", v, global_step)
                     episode_count += 1
 
-        # bootstrap value if not done
+        # Compute Q(lambda) targets
         with torch.no_grad():
-            next_value = agent.get_value(next_obs).reshape(1, -1)
-            advantages = torch.zeros_like(rewards).to(device)
-            lastgaelam = 0
+            returns = torch.zeros_like(rewards).to(device)
             for t in reversed(range(args.num_steps)):
                 if t == args.num_steps - 1:
+                    next_value, _ = torch.max(q_network(next_obs, next_lstm_state, next_done)[0], dim=-1)
                     nextnonterminal = 1.0 - next_done.float()
-                    nextvalues = next_value
+                    returns[t] = rewards[t] + args.gamma * next_value * nextnonterminal
                 else:
                     nextnonterminal = 1.0 - dones[t + 1]
-                    nextvalues = values[t + 1]
-                delta = rewards[t] + args.gamma * nextvalues * nextnonterminal - values[t]
-                advantages[t] = lastgaelam = delta + args.gamma * args.gae_lambda * nextnonterminal * lastgaelam
-            returns = advantages + values
+                    next_value = values[t + 1]
+                    returns[t] = rewards[t] + args.gamma * (
+                        args.q_lambda * returns[t + 1] + (1 - args.q_lambda) * next_value
+                    ) * nextnonterminal
 
         # flatten the batch
         b_obs = obs.reshape((-1,) + obs_shape)
-        b_logprobs = logprobs.reshape(-1)
         b_actions = actions.reshape((-1,) + envs.single_action_space.shape)
-        b_advantages = advantages.reshape(-1)
         b_returns = returns.reshape(-1)
-        b_values = values.reshape(-1)
+        b_dones = dones.reshape(-1)
 
-        # Optimizing the policy and value network
-        b_inds = np.arange(args.batch_size)
-        clipfracs = []
+        assert args.num_envs % args.num_minibatches == 0
+        envsperbatch = args.num_envs // args.num_minibatches
+        envinds = np.arange(args.num_envs)
+        flatinds = np.arange(args.batch_size).reshape(args.num_steps, args.num_envs)
+
+        # Optimizing the Q-network
         for epoch in range(args.update_epochs):
-            np.random.shuffle(b_inds)
-            for start in range(0, args.batch_size, args.minibatch_size):
-                end = start + args.minibatch_size
-                mb_inds = b_inds[start:end]
+            np.random.shuffle(envinds)
+            for start in range(0, args.num_envs, envsperbatch):
+                end = start + envsperbatch
+                mbenvinds = envinds[start:end]
+                mb_inds = flatinds[:, mbenvinds].ravel()
 
-                _, newlogprob, entropy, newvalue = agent.get_action_and_value(b_obs[mb_inds], b_actions.long()[mb_inds])
-                logratio = newlogprob - b_logprobs[mb_inds]
-                ratio = logratio.exp()
+                old_val, _ = q_network(
+                    b_obs[mb_inds],
+                    (initial_lstm_state[0][:, mbenvinds], initial_lstm_state[1][:, mbenvinds]),
+                    b_dones[mb_inds]
+                )
+                old_val = old_val.gather(1, b_actions[mb_inds].unsqueeze(-1).long()).squeeze()
 
-                with torch.no_grad():
-                    # calculate approx_kl http://joschu.net/blog/kl-approx.html
-                    old_approx_kl = (-logratio).mean()
-                    approx_kl = ((ratio - 1) - logratio).mean()
-                    clipfracs += [((ratio - 1.0).abs() > args.clip_coef).float().mean().item()]
+                loss = F.mse_loss(b_returns[mb_inds], old_val)
 
-                mb_advantages = b_advantages[mb_inds]
-                if args.norm_adv:
-                    mb_advantages = (mb_advantages - mb_advantages.mean()) / (mb_advantages.std() + 1e-8)
-
-                # Policy loss
-                pg_loss1 = -mb_advantages * ratio
-                pg_loss2 = -mb_advantages * torch.clamp(ratio, 1 - args.clip_coef, 1 + args.clip_coef)
-                pg_loss = torch.max(pg_loss1, pg_loss2).mean()
-
-                # Value loss
-                newvalue = newvalue.view(-1)
-                if args.clip_vloss:
-                    v_loss_unclipped = (newvalue - b_returns[mb_inds]) ** 2
-                    v_clipped = b_values[mb_inds] + torch.clamp(
-                        newvalue - b_values[mb_inds],
-                        -args.clip_coef,
-                        args.clip_coef,
-                    )
-                    v_loss_clipped = (v_clipped - b_returns[mb_inds]) ** 2
-                    v_loss_max = torch.max(v_loss_unclipped, v_loss_clipped)
-                    v_loss = 0.5 * v_loss_max.mean()
-                else:
-                    v_loss = 0.5 * ((newvalue - b_returns[mb_inds]) ** 2).mean()
-
-                entropy_loss = entropy.mean()
-                loss = pg_loss - args.ent_coef * entropy_loss + v_loss * args.vf_coef
-
+                # optimize the model
                 optimizer.zero_grad()
                 loss.backward()
-                nn.utils.clip_grad_norm_(agent.parameters(), args.max_grad_norm)
+                nn.utils.clip_grad_norm_(q_network.parameters(), args.max_grad_norm)
                 optimizer.step()
 
-            if args.target_kl is not None and approx_kl > args.target_kl:
-                break
-
-        y_pred, y_true = b_values.cpu().numpy(), b_returns.cpu().numpy()
-        var_y = np.var(y_true)
-        explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
-
-        # TRY NOT TO MODIFY: record rewards for plotting purposes
-        writer.add_scalar("charts/learning_rate", optimizer.param_groups[0]["lr"], global_step)
-        writer.add_scalar("losses/value_loss", v_loss.item(), global_step)
-        writer.add_scalar("losses/policy_loss", pg_loss.item(), global_step)
-        writer.add_scalar("losses/entropy", entropy_loss.item(), global_step)
-        writer.add_scalar("losses/old_approx_kl", old_approx_kl.item(), global_step)
-        writer.add_scalar("losses/approx_kl", approx_kl.item(), global_step)
-        writer.add_scalar("losses/clipfrac", np.mean(clipfracs), global_step)
-        writer.add_scalar("losses/explained_variance", explained_var, global_step)
+        writer.add_scalar("losses/td_loss", loss, global_step)
+        writer.add_scalar("losses/q_values", old_val.mean().item(), global_step)
         print("SPS:", int(global_step / (time.time() - start_time)))
         writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
+        writer.add_scalar("charts/epsilon", epsilon, global_step)
 
-    torch.save(agent.state_dict(), f"runs/{run_name}/agent_{iteration}.pt")
+    torch.save(q_network.state_dict(), f"runs/{run_name}/agent_{iteration}.pt")
     writer.close()

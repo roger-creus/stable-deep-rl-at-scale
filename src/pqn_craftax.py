@@ -39,9 +39,9 @@ class PQN_Craftax_Args:
     """total timesteps of the experiments"""
     learning_rate: float = 0.00025
     """the learning rate of the optimizer"""
-    num_envs: int = 1024
+    num_envs: int = 512
     """the number of parallel game environments"""
-    num_steps: int = 128
+    num_steps: int = 64
     """the number of steps to run in each environment per policy rollout"""
     anneal_lr: bool = True
     """Toggle learning rate annealing for policy and value networks"""
@@ -49,11 +49,11 @@ class PQN_Craftax_Args:
     """the discount factor gamma"""
     q_lambda: float = 0.65
     """the lambda for the general advantage estimation"""
-    num_minibatches: int = 4
+    num_minibatches: int = 8
     """the number of mini-btches"""
-    update_epochs: int = 4
+    update_epochs: int = 2
     """the K epochs to update the policy"""
-    max_grad_norm: float = 0.5
+    max_grad_norm: float = 10.0
     """the maximum norm for the gradient clipping"""
     log_every: int = 10
     """how often to log the training progress (every how many episodes)"""
@@ -114,48 +114,14 @@ class PQN_Craftax_Agent(nn.Module):
             last_act=True,
         )
      
-        self.lstm = nn.LSTM(512, 128)
-        for name, param in self.lstm.named_parameters():
-            if "bias" in name:
-                nn.init.constant_(param, 0)
-            elif "weight" in name:
-                nn.init.orthogonal_(param, 1.0)
-        
-        self.post_lstm = nn.Sequential(
-            layer_init(nn.Linear(128, 128)),
-            nn.LayerNorm(128),
-            nn.ReLU(),
-        )   
-        
         self.q_func = nn.Sequential(
-            layer_init(nn.Linear(128, envs.single_action_space.n))
+            layer_init(nn.Linear(512, envs.single_action_space.n))
         )
 
-    def get_states(self, x, lstm_state, done):
+    def forward(self, x):
         hidden = self.network(x)
-
-        # LSTM logic
-        batch_size = lstm_state[0].shape[1]
-        hidden = hidden.reshape((-1, batch_size, self.lstm.input_size))
-        done = done.reshape((-1, batch_size))
-        new_hidden = []
-        for h, d in zip(hidden, done):
-            h, lstm_state = self.lstm(
-                h.unsqueeze(0),
-                (
-                    (1.0 - d.float()).view(1, -1, 1) * lstm_state[0],
-                    (1.0 - d.float()).view(1, -1, 1) * lstm_state[1],
-                ),
-            )
-            new_hidden += [h]
-        new_hidden = torch.flatten(torch.cat(new_hidden), 0, 1)
-        new_hidden = self.post_lstm(new_hidden)
-        return new_hidden, lstm_state
-
-    def forward(self, x, lstm_state, done):
-        hidden, lstm_state = self.get_states(x, lstm_state, done)
         qvals = self.q_func(hidden)
-        return qvals, lstm_state
+        return qvals
 
 def linear_schedule(start_e: float, end_e: float, duration: int, t: int):
     slope = (end_e - start_e) / duration
@@ -221,7 +187,7 @@ if __name__ == "__main__":
     
     optimizer_cls = get_optimizer(args.optimizer)
     if args.optimizer == "kron":
-        optimizer = optimizer_cls(q_network.parameters(), lr=args.learning_rate / 2.5)
+        optimizer = optimizer_cls(q_network.parameters(), lr=args.learning_rate / 1.25)
     else:
         optimizer = optimizer_cls(q_network.parameters(), lr=args.learning_rate)
 
@@ -239,14 +205,8 @@ if __name__ == "__main__":
     start_time = time.time()
     next_done = torch.zeros(args.num_envs).to(device)
     episode_count = 0
-    
-    next_lstm_state = (
-        torch.zeros(1, args.num_envs, q_network.lstm.hidden_size).to(device),
-        torch.zeros(1, args.num_envs, q_network.lstm.hidden_size).to(device),
-    )
 
     for iteration in range(1, args.num_iterations + 1):
-        initial_lstm_state = (next_lstm_state[0].clone(), next_lstm_state[1].clone())
 
         # Annealing the rate if instructed to do so.
         if args.anneal_lr:
@@ -263,7 +223,7 @@ if __name__ == "__main__":
             random_actions = torch.randint(0, envs.single_action_space.n, (args.num_envs,)).to(device)
             
             with torch.no_grad():
-                q_values, next_lstm_state = q_network(next_obs, next_lstm_state, next_done)
+                q_values = q_network(next_obs)
                 max_actions = torch.argmax(q_values, dim=1)
                 values[step] = q_values[torch.arange(args.num_envs), max_actions].flatten()
 
@@ -300,7 +260,7 @@ if __name__ == "__main__":
             returns = torch.zeros_like(rewards).to(device)
             for t in reversed(range(args.num_steps)):
                 if t == args.num_steps - 1:
-                    next_value, _ = torch.max(q_network(next_obs, next_lstm_state, next_done)[0], dim=-1)
+                    next_value = torch.max(q_network(next_obs), dim=-1)
                     nextnonterminal = 1.0 - next_done.float()
                     returns[t] = rewards[t] + args.gamma * next_value * nextnonterminal
                 else:
@@ -314,28 +274,16 @@ if __name__ == "__main__":
         b_obs = obs.reshape((-1,) + obs_shape)
         b_actions = actions.reshape((-1,) + envs.single_action_space.shape)
         b_returns = returns.reshape(-1)
-        b_dones = dones.reshape(-1)
-
-        assert args.num_envs % args.num_minibatches == 0
-        envsperbatch = args.num_envs // args.num_minibatches
-        envinds = np.arange(args.num_envs)
-        flatinds = np.arange(args.batch_size).reshape(args.num_steps, args.num_envs)
 
         # Optimizing the Q-network
+        b_inds = np.arange(args.batch_size)
         for epoch in range(args.update_epochs):
-            np.random.shuffle(envinds)
-            for start in range(0, args.num_envs, envsperbatch):
-                end = start + envsperbatch
-                mbenvinds = envinds[start:end]
-                mb_inds = flatinds[:, mbenvinds].ravel()
+            np.random.shuffle(b_inds)
+            for start in range(0, args.batch_size, args.minibatch_size):
+                end = start + args.minibatch_size
+                mb_inds = b_inds[start:end]
 
-                old_val, _ = q_network(
-                    b_obs[mb_inds],
-                    (initial_lstm_state[0][:, mbenvinds], initial_lstm_state[1][:, mbenvinds]),
-                    b_dones[mb_inds]
-                )
-                old_val = old_val.gather(1, b_actions[mb_inds].unsqueeze(-1).long()).squeeze()
-
+                old_val = q_network(b_obs[mb_inds]).gather(1, b_actions[mb_inds].unsqueeze(-1).long()).squeeze()
                 loss = F.mse_loss(b_returns[mb_inds], old_val)
 
                 # optimize the model
