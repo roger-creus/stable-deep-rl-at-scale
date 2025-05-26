@@ -25,7 +25,6 @@ from utils.utils import parse_mlp_width, parse_mlp_depth, get_grad_norms, get_op
 from models.encoder import AtariCNN, ImpalaCNN
 from models.agent import MLP, ResidualMLP, MultiSkipResidualMLP
 
-
 @dataclass
 class Args:
     exp_name: str = os.path.basename(__file__)[: -len(".py")]
@@ -229,7 +228,6 @@ class NoisyDuelingDistributionalNetwork(nn.Module):
             NoisyLinear(512, n_atoms)
         )
 
-        
         self.advantage_trunk = mlp_clss(
             input_size=input_dim,
             hidden_size=mlp_width,
@@ -240,7 +238,6 @@ class NoisyDuelingDistributionalNetwork(nn.Module):
             last_act=True,
             linear_clss=NoisyLinear
         )   
-        
         
         self.advantage_head = nn.Sequential(
             NoisyLinear(512, n_atoms * self.n_actions)
@@ -530,8 +527,6 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
             for info in infos["final_info"]:
                 if info and "episode" in info:
                     print(f"global_step={global_step}, episodic_return={info['episode']['r']}")
-                    #writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
-                    #writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
                     if args.track:
                         wandb.log({
                             "charts/episodic_return": info["episode"]["r"],
@@ -600,13 +595,9 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                 rb.update_priorities(data.indices, new_priorities)
 
                 if global_step % 100 == 0:
-                    #writer.add_scalar("losses/td_loss", loss.item(), global_step)
                     q_values = (pred_dist * q_network.support).sum(dim=1)  # [B]
-                    #writer.add_scalar("losses/q_values", q_values.mean().item(), global_step)
                     sps = int(global_step / (time.time() - start_time))
                     print("SPS:", sps)
-                    #writer.add_scalar("charts/SPS", sps, global_step)
-                    #writer.add_scalar("charts/beta", rb.beta, global_step)
                     
                     grad_norms = get_grad_norms(q_network)
                     grad_norms = {f"grad_norms/{k}": v for k, v in grad_norms.items()}

@@ -26,14 +26,11 @@ Distribution.set_default_validate_args(False)
 torch.set_float32_matmul_precision("high")
 
 from utils.compute_hns import _compute_hns
-from utils.loss_landscape import plot_loss_landscape
 from utils.utils import parse_cnn_size, parse_mlp_depth, parse_mlp_width, get_optimizer, get_grad_norms, get_grad_cosine
 from utils.args import PQNArgs
-from utils.compute_churn import compute_representation_and_q_churn, compute_ranks_from_features, plot_representation_change, plot_activations_range, compute_losslandscape_metrics
+from utils.representation_dynamics import compute_representation_and_q_churn, compute_ranks_from_features, compute_losslandscape_metrics
 from utils.wrappers import RecordEpisodeStatistics
 from models.agent import PQNAgent
-
-from IPython import embed
 
 def linear_schedule(start_e: float, end_e: float, duration: int, t: int):
     slope = (end_e - start_e) / duration
@@ -287,19 +284,6 @@ if __name__ == "__main__":
                 out = update(container_local, tensordict_out=tensordict.TensorDict())
                 gns.append(out["gn"].cpu().numpy())
                 
-                # Log loss landscape (only once: first minibatch of first epoch)
-                # if (epoch == 0 and b_idx == 0 and global_step_burnin is not None and  iteration in args.log_iterations_img and prev_container is not None):
-                #     try:
-                #         with torch.no_grad():
-                #             max_to_keep = min(512, len(container_flat))
-                #         cntner_loss_landscape = container_flat[torch.randperm(len(container_flat))[:max_to_keep]]
-                #         batch_obs = cntner_loss_landscape['obs']
-                #         batch_actions = cntner_loss_landscape['actions']
-                #         batch_returns = cntner_loss_landscape['returns']
-                #         plot_loss_landscape(old_agent, batch_obs, batch_actions, batch_returns, grid_range=1.0, num_points=21, global_step=global_step)
-                #     except Exception as e:
-                #         print(f"Failed to plot loss landscape: {e}")
-                
                 if (epoch == 0 and b_idx == 0 and global_step_burnin is not None and iteration in args.log_iterations):
                     try:
                         with torch.no_grad():
@@ -354,21 +338,6 @@ if __name__ == "__main__":
             except Exception as e:
                 print(f"Failed to compute grad metrics: {e}")
                             
-        # log representation change
-        # if global_step_burnin is not None and iteration in args.log_iterations_img and prev_container is not None:
-        #     try:
-        #         plot_representation_change(
-        #             agent,
-        #             old_agent,
-        #             container["obs"],
-        #             prev_container["obs"],
-        #             global_step=global_step,
-        #             num_points=300,
-        #             name="learning_dynamics_change_per_iteration",
-        #         )
-        #     except Exception as e:
-        #         print(f"Failed to plot representation change: {e}")
-                
         # logging
         if global_step_burnin is not None and iteration in args.log_iterations:
             cur_time = time.time()

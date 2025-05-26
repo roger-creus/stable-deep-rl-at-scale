@@ -1,12 +1,10 @@
 import torch
 import torch.nn as nn
 import numpy as np
-import torch.nn.functional as F
 from torch.distributions import Categorical
 from models.encoder import AtariCNN, ImpalaCNN, ConvSequence
 from models.mlp import MLP, ResidualMLP, ResidualBlock, MultiSkipResidualMLP, MultiSkipResidualBlock, DenseNetMLP, DenseBlock
 from utils.utils import get_act_fn_clss, get_act_fn_functional
-from IPython import embed
 
 def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
     torch.nn.init.orthogonal_(layer.weight, std)    
@@ -28,9 +26,6 @@ class BasePQNAgent(nn.Module):
         activation_fn="relu",
         device=None
     ):
-        """
-        Common initialization of the feature extractor (CNN/ViT) and MLP trunk.
-        """
         super().__init__()
         self.envs = envs
         self.use_ln = use_ln
@@ -39,7 +34,6 @@ class BasePQNAgent(nn.Module):
         self.device = device
         self.act_fn_F = get_act_fn_functional(activation_fn)
         
-        # Choose the MLP class.
         if mlp_type == "default":
             mlp_clss = MLP
         elif mlp_type == "residual":
@@ -51,7 +45,6 @@ class BasePQNAgent(nn.Module):
         else:
             raise NotImplementedError(f"Unknown mlp_type: {mlp_type}")
         
-        # Build the convolutional (or transformer) network.
         if cnn_type == "atari":
             self.network = AtariCNN(
                 cnn_channels=cnn_channels,
@@ -69,14 +62,12 @@ class BasePQNAgent(nn.Module):
         else:
             raise NotImplementedError(f"Unknown cnn_type: {cnn_type}")
         
-        # Compute the flattened output size of the feature extractor.
         with torch.no_grad():
             dummy = envs.single_observation_space.sample()
             dummy_torch = torch.as_tensor(dummy).unsqueeze(0).float().to(device)
             dummy_features = self.network(dummy_torch)
             dummy_shape = dummy_features.view(dummy_features.size(0), -1).shape[1]
         
-        # Build the MLP trunk.
         self.trunk = mlp_clss(
             input_size=dummy_shape,
             hidden_size=trunk_hidden_size,
@@ -89,9 +80,9 @@ class BasePQNAgent(nn.Module):
             last_act=False
         )
         
-        # Save the number of actions.
         self.action_dim = envs.single_action_space.n
 
+    # get the representation of the input x. pass layer by layer to get every layer's intermediate representation.
     def get_representation(self, x, dead_neurons=False, per_layer=False):
         x = x / 255.0
         neurons = []
@@ -147,10 +138,6 @@ class BasePQNAgent(nn.Module):
         return x
 
     def get_layer_shapes(self):
-        """
-        Returns a dictionary containing the shapes (or dimensions) of each layer's output,
-        ensuring consistency with get_representation().
-        """
         layer_shapes = {}
         device = next(self.parameters()).device
         dummy_input = torch.rand(1, 4, 84, 84).to(device)
@@ -166,10 +153,9 @@ class BasePQNAgent(nn.Module):
                 else:
                     with torch.no_grad():
                         if isinstance(module, MultiSkipResidualBlock) and not isinstance(x, tuple):
-                            x = (x, x)  # Ensure residual blocks get correct input
+                            x = (x, x)
                         x = module(x)
 
-                    # Capture only the same layers as in get_representation
                     if isinstance(module, hook_cls):
                         shapes[f'{prefix}_{count}'] = x[0].shape if isinstance(x, tuple) else x.shape
                         count += 1
@@ -187,28 +173,20 @@ class BasePQNAgent(nn.Module):
 
             return x, count, shapes
 
-        # Process CNN layers
         cnn_hook = nn.LayerNorm if self.use_ln else nn.Conv2d
         cnn_additional = ConvSequence
         x, _, cnn_shapes = process_modules(self.network.cnn.children(), dummy_input, 'cnn', cnn_hook, cnn_additional)
         layer_shapes.update(cnn_shapes)
 
-        # Flatten before passing to MLP
         x = x.view(x.size(0), -1)
 
-        # Process MLP layers
         mlp_hook = nn.LayerNorm if self.use_ln else nn.Linear
         mlp_additional = (ResidualBlock, MultiSkipResidualBlock, DenseBlock)
         x, _, mlp_shapes = process_modules(self.trunk.net.children(), x, 'mlp', mlp_hook, mlp_additional)
         layer_shapes.update(mlp_shapes)
-
         return layer_shapes
 
     def calculate_dead_neurons(self, neurons):
-        """
-        Given a list of (layer, activations) tuples, returns the fraction of neurons that
-        are “dead” (i.e. have an average activation ≤ 0) per block.
-        """
         total = {"cnn": 0, "mlp": 0}
         dead = {"cnn": 0, "mlp": 0}
         
@@ -273,84 +251,6 @@ class PQNAgent(BasePQNAgent):
     def get_max_value(self, x):
         return self.forward(x).max(1)[0]
     
-    def get_softmax_value(self, x, alpha=1.0):
-        q_values = self.forward(x)
-        q_values = alpha * torch.logsumexp(q_values / alpha, dim=1)
-        return q_values
-    
-# ============================================================================
-# Distributional PQN Agent
-# ============================================================================
-
-class DistributionalPQNAgent(BasePQNAgent):
-    def __init__(
-        self,
-        envs,
-        use_ln=True,
-        use_spectral_norm=False,
-        cnn_type="atari",
-        mlp_type="default",
-        cnn_channels=[32, 64, 64],
-        trunk_hidden_size=512,
-        trunk_output_size=512,
-        trunk_num_layers=1,
-        activation_fn="relu",
-        device=None,
-        n_atoms=51,
-        v_min=-10,
-        v_max=10,
-    ):
-        super().__init__(
-            envs,
-            use_ln=use_ln,
-            use_spectral_norm=use_spectral_norm,
-            cnn_type=cnn_type,
-            mlp_type=mlp_type,
-            cnn_channels=cnn_channels,
-            trunk_hidden_size=trunk_hidden_size,
-            trunk_output_size=trunk_output_size,
-            trunk_num_layers=trunk_num_layers,
-            activation_fn=activation_fn,
-            device=device
-        )
-        self.n_atoms = n_atoms
-        self.v_min = v_min
-        self.v_max = v_max
-        
-        # Create and register the fixed set of atoms.
-        self.register_buffer("atoms", torch.linspace(v_min, v_max, steps=n_atoms, device=device))
-        act_ = get_act_fn_clss(activation_fn)
-        self.q_func = nn.Sequential(
-            act_(),
-            layer_init(nn.Linear(trunk_output_size, self.action_dim * n_atoms, device=device), std=0.01),
-        )
-
-    def forward(self, x):
-        """
-        Returns a tuple (logits, pmfs) where pmfs is the probability mass function for
-        each action (reshaped as [batch, action_dim, n_atoms]).
-        """
-        hidden = self.get_representation(x)
-        logits = self.q_func(hidden)
-        logits = logits.view(x.size(0), self.action_dim, self.n_atoms)
-        pmfs = F.softmax(logits, dim=2)
-        return logits, pmfs
-
-    def get_max_value(self, x):
-        """
-        Returns the maximum expected Q-value over actions for each observation.
-        """
-        _, pmfs = self.forward(x)
-        q_values = torch.sum(pmfs * self.atoms, dim=2)
-        return torch.max(q_values, dim=1)[0]
-    
-    def get_Q(self, hidden):
-        logits = self.q_func(hidden)
-        logits = logits.view(hidden.size(0), self.action_dim, self.n_atoms)
-        pmfs = F.softmax(logits, dim=2)
-        q_values = torch.sum(pmfs * self.atoms, dim=2)
-        return q_values
-
     
 ######################################## PPO Agents ########################################
 class SharedTrunkPPOAgent(nn.Module):
@@ -390,7 +290,6 @@ class SharedTrunkPPOAgent(nn.Module):
         else:
             raise NotImplementedError(f"Unknown cnn_type: {cnn_type}")
         
-        # Choose the MLP class.
         if mlp_type == "default":
             mlp_clss = MLP
         elif mlp_type == "residual":
@@ -402,7 +301,6 @@ class SharedTrunkPPOAgent(nn.Module):
         else:
             raise NotImplementedError(f"Unknown mlp_type: {mlp_type}")
         
-        # compute output size of network
         with torch.no_grad():
             dummy = envs.single_observation_space.sample()
             dummy_torch = torch.as_tensor(dummy).unsqueeze(0).float().to(device)
@@ -524,10 +422,6 @@ class SharedTrunkPPOAgent(nn.Module):
         return x
 
     def get_layer_shapes(self):
-        """
-        Returns a dictionary containing the shapes (or dimensions) of each layer's output,
-        ensuring consistency with get_representation().
-        """
         layer_shapes = {}
         device = next(self.parameters()).device
         dummy_input = torch.rand(1, 4, 84, 84).to(device)
@@ -543,10 +437,9 @@ class SharedTrunkPPOAgent(nn.Module):
                 else:
                     with torch.no_grad():
                         if isinstance(module, MultiSkipResidualBlock) and not isinstance(x, tuple):
-                            x = (x, x)  # Ensure residual blocks get correct input
+                            x = (x, x)
                         x = module(x)
 
-                    # Capture only the same layers as in get_representation
                     if isinstance(module, hook_cls):
                         shapes[f'{prefix}_{count}'] = x[0].shape if isinstance(x, tuple) else x.shape
                         count += 1
@@ -564,110 +457,16 @@ class SharedTrunkPPOAgent(nn.Module):
 
             return x, count, shapes
 
-        # Process CNN layers
         cnn_hook = nn.LayerNorm if self.use_ln else nn.Conv2d
         cnn_additional = ConvSequence
         x, _, cnn_shapes = process_modules(self.network.cnn.children(), dummy_input, 'cnn', cnn_hook, cnn_additional)
         layer_shapes.update(cnn_shapes)
 
-        # Flatten before passing to MLP
         x = x.view(x.size(0), -1)
 
-        # Process MLP layers
         mlp_hook = nn.LayerNorm if self.use_ln else nn.Linear
         mlp_additional = (ResidualBlock, MultiSkipResidualBlock)
         x, _, mlp_shapes = process_modules(self.trunk.net.children(), x, 'mlp', mlp_hook, mlp_additional)
         layer_shapes.update(mlp_shapes)
 
         return layer_shapes
-    
-
-class DecoupledPPOAgent(nn.Module):
-    def __init__(
-        self,
-        envs,
-        use_ln=False,
-        use_spectral_norm=False,
-        cnn_type="atari",
-        cnn_channels=[32, 64, 64],
-        activation_fn="relu",
-        trunk_hidden_size=512,
-        trunk_output_size=512,
-        trunk_num_layers=1,
-        device=None
-    ):
-        super().__init__()
-        
-        if cnn_type == "atari":
-            network_clss = AtariCNN
-        elif cnn_type == "impala":
-            network_clss = ImpalaCNN
-        else:
-            raise NotImplementedError(f"Unknown cnn_type: {cnn_type}")
-        
-        # compute output size of network
-        with torch.no_grad():
-            dummy_enc = network_clss(
-                cnn_channels=cnn_channels,
-                use_ln=use_ln,
-                device=device
-            )
-            dummy = envs.single_observation_space.sample()
-            dummy_torch = torch.as_tensor(dummy).unsqueeze(0).float().to(device)
-            dummy = dummy_enc(dummy_torch)
-            dummy_shape = dummy.view(dummy.size(0), -1).shape[1]
-            del dummy_enc
-            del dummy
-            del dummy_torch
-            
-        self.actor = nn.Sequential(
-            network_clss(
-                cnn_channels=cnn_channels,
-                use_ln=use_ln,
-                activation_fn=activation_fn,
-                device=device
-            ),
-            MLP(
-                input_size=dummy_shape,
-                hidden_size=trunk_hidden_size,
-                output_size=trunk_output_size,
-                num_layers=trunk_num_layers,
-                activation_fn=activation_fn,
-                use_ln=use_ln,
-                use_spectral_norm=use_spectral_norm,
-                last_act=True,
-                device=device
-            ),
-            layer_init(nn.Linear(trunk_output_size, envs.single_action_space.n, device=device), std=0.01)
-        )
-        
-        self.critic = nn.Sequential(
-            network_clss(
-                cnn_channels=cnn_channels,
-                activation_fn=activation_fn,
-                use_ln=use_ln,
-                device=device
-            ),
-            MLP(
-                input_size=dummy_shape,
-                hidden_size=trunk_hidden_size,
-                output_size=trunk_output_size,
-                num_layers=trunk_num_layers,
-                use_ln=use_ln,
-                use_spectral_norm=use_spectral_norm,
-                activation_fn=activation_fn,
-                last_act=True,
-                device=device
-            ),
-            layer_init(nn.Linear(trunk_output_size, 1, device=device), std=1)
-        )
-
-    def get_value(self, x):
-        return self.critic(x / 255.0)
-
-    def get_action_and_value(self, obs, action=None):
-        logits = self.actor(obs / 255.0)
-        probs = Categorical(logits=logits)
-        if action is None:
-            action = probs.sample()
-        return action, probs.log_prob(action), probs.entropy(), self.critic(obs / 255.0)

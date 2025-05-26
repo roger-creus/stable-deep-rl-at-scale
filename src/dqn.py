@@ -9,7 +9,6 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torch.optim as optim
 import tyro
 from stable_baselines3.common.atari_wrappers import (
     ClipRewardEnv,
@@ -19,7 +18,6 @@ from stable_baselines3.common.atari_wrappers import (
     NoopResetEnv,
 )
 from stable_baselines3.common.buffers import ReplayBuffer
-from IPython import embed
 
 from utils.utils import parse_mlp_width, parse_mlp_depth, get_grad_norms, get_optimizer
 from models.encoder import AtariCNN, ImpalaCNN
@@ -119,7 +117,7 @@ def make_env(env_id, seed, idx, capture_video, run_name):
     return thunk
 
 
-# ALGO LOGIC: initialize agent here:
+# ALGO LOGIC: initialize agent here
 class QNetwork(nn.Module):
     def __init__(self, env, mlp_type, mlp_width, mlp_depth, use_ln, cnn_type, device):
         super().__init__()
@@ -150,7 +148,6 @@ class QNetwork(nn.Module):
         else:
             raise ValueError(f"Invalid MLP type: {mlp_type}")
         
-        # MLP part - configurable width and depth
         with torch.no_grad():
             dummy = env.single_observation_space.sample()
             dummy_torch = torch.as_tensor(dummy).unsqueeze(0).float().to(device)

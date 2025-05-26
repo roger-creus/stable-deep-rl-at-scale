@@ -4,7 +4,6 @@ import torch.nn.functional as F
 import torch.nn as nn
 from kron_torch import Kron
 import torch_optimizer as optim
-from IPython import embed
 
 def parse_cnn_size(net_size):
     if net_size == "small":
@@ -44,7 +43,6 @@ def get_mlp_num_params(mlp_width, mlp_depth):
     params += neurons_per_layer
     return params
 
-    
 def get_act_fn_functional(act_fn):
     if act_fn == "relu":
         return F.relu
@@ -105,10 +103,8 @@ def clean_grad_stats(grad_stats, use_ln=True):
     cleaned = {k.replace("network.", "").replace(".weight", "").replace(".", "_"): v for k, v in grad_stats.items()}
     
     if "ln" in cleaned.keys():
-        # remove all layernorms (indicated with ln in impala cnn)
         cleaned = {k: v for k, v in cleaned.items() if "ln" not in k}
     elif use_ln:
-        # atari cnn can still use layernorms but it wont be indicated in the key. we can detect them by keeping only the ones that are divisible by 3 (conv, layernorm, activation)...
         for k in list(cleaned.keys()):
             if "cnn" in k:
                 try:
@@ -135,7 +131,6 @@ def get_weight_norms(agent, use_ln=True):
     layer_weight_norms = {}
     for name, param in agent.named_parameters():
         if "weight" in name:
-            # skip layernorms
             if len(param.shape) == 1:
                 continue
             weight_flat = param.detach().view(-1)
@@ -161,12 +156,12 @@ def get_dormant_neurons(agent, images_batch, use_ln=True):
         agent(images_batch)
     
     for name, activation in activations.items():
-        if len(activation.shape) == 4:  # Conv layer: [batch, channels, height, width]
+        if len(activation.shape) == 4:
             reshaped = activation.permute(1, 0, 2, 3).reshape(activation.shape[1], -1)
             dormant_count = (reshaped.max(dim=1)[0] <= 0).sum().item()
             dormant_neurons[name] = dormant_count / activation.shape[1]
-        elif len(activation.shape) == 2:  # Linear layer: [batch, features]
-            reshaped = activation.t()  # [features, batch]
+        elif len(activation.shape) == 2:
+            reshaped = activation.t()
             dormant_count = (reshaped.max(dim=1)[0] <= 0).sum().item()
             dormant_neurons[name] = dormant_count / activation.shape[1]
     
@@ -180,7 +175,6 @@ def get_grad_norms(agent, use_ln=True):
     layer_grad_norms = {}
     for name, param in agent.named_parameters():
         if param.grad is not None and "weight" in name:
-            # skip layernorms
             if len(param.shape) == 1:
                 continue
             grad_flat = param.grad.detach().view(-1)
@@ -192,7 +186,6 @@ def get_grad_cosine(agent, use_ln=True):
     grad_direction_cosine = {}
     for name, param in agent.named_parameters():
         if param.grad is not None and "weight" in name:
-            # skip layernorms
             if len(param.shape) == 1:
                 continue
             

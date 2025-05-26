@@ -19,10 +19,7 @@ import csv
 import os
 import wandb
 
-from IPython import embed
-
 def get_mlp(mlp_type, input_size, mlp_width, mlp_depth, use_ln=False, device="cuda"):
-    # Choose the MLP class.
     if mlp_type == "default":
         from models.mlp import MLP as MLPClass
     elif mlp_type == "residual":
@@ -35,7 +32,6 @@ def get_mlp(mlp_type, input_size, mlp_width, mlp_depth, use_ln=False, device="cu
     trunk_hidden_size = parse_mlp_width(mlp_width)
     trunk_num_layers = parse_mlp_depth(mlp_depth, mlp_type)
     
-    # Build the MLP trunk.
     mlp = MLPClass(
         input_size=int(input_size),
         hidden_size=trunk_hidden_size,
@@ -133,7 +129,6 @@ def train_cifar(run_name, mlp_type, optimizer_name, mlp_depth, mlp_width, datase
             super().__init__()
             
             layers = []
-            # First conv block
             layers.extend([
                 nn.Conv2d(3, 32, kernel_size=3, padding=1),
                 nn.ReLU(),
@@ -141,13 +136,12 @@ def train_cifar(run_name, mlp_type, optimizer_name, mlp_depth, mlp_width, datase
                 nn.ReLU(),
             ])
             if use_ln:
-                layers.append(nn.GroupNorm(8, 64))  # GroupNorm as a substitute for LayerNorm in CNNs
+                layers.append(nn.GroupNorm(8, 64))
             layers.extend([
                 nn.MaxPool2d(2, 2),
                 nn.Dropout2d(0.2),
             ])
 
-            # Second conv block
             layers.extend([
                 nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=1),
                 nn.ReLU(),
@@ -161,7 +155,6 @@ def train_cifar(run_name, mlp_type, optimizer_name, mlp_depth, mlp_width, datase
                 nn.Dropout2d(0.2),
             ])
 
-            # Third conv block
             layers.extend([
                 nn.Conv2d(128, 128, kernel_size=3, stride=1, padding=1),
                 nn.ReLU(),
@@ -192,7 +185,6 @@ def train_cifar(run_name, mlp_type, optimizer_name, mlp_depth, mlp_width, datase
     
     model = CIFARClassifier(mlp, num_classes, use_ln=use_ln).to(device)
     
-    # Initialize dictionary for storing previous gradient directions
     if not hasattr(model, "prev_grad_dirs"):
         model.prev_grad_dirs = {}
     
@@ -201,17 +193,14 @@ def train_cifar(run_name, mlp_type, optimizer_name, mlp_depth, mlp_width, datase
     criterion = nn.CrossEntropyLoss()
     optimizer = get_optimizer(optimizer_name)(model.parameters(), lr=0.00025)
     
-    # Lists to store epoch-level metrics
     train_loss_hist = []
     train_acc_hist = []
     test_loss_hist = []
     test_acc_hist = []
     
-    # Define non-stationary change points
     change_points = [20, 40, 60, 80] if non_stationary else []
     
     for epoch in range(epochs):
-        # Reshuffle labels at change points if non-stationary
         if non_stationary and epoch in change_points:
             trainset.reshuffle_labels()
             testset.reshuffle_labels()
@@ -236,7 +225,6 @@ def train_cifar(run_name, mlp_type, optimizer_name, mlp_depth, mlp_width, datase
             batch_weight_norms = get_weight_norms(model, use_ln=use_ln)
             batch_dormant_neurons = get_dormant_neurons(model, images, use_ln=use_ln)
             
-            # Aggregate gradient norms.
             for key, value in batch_grad_norms.items():
                 aggregated_grad_norms.setdefault(key, []).append(value)
             for key, value in batch_grad_cosine.items():
@@ -259,7 +247,6 @@ def train_cifar(run_name, mlp_type, optimizer_name, mlp_depth, mlp_width, datase
         train_loss_hist.append(train_loss)
         train_acc_hist.append(train_acc)
         
-        # Evaluate on test set.
         model.eval()
         total_loss, correct, total = 0, 0, 0
         with torch.no_grad():
@@ -280,12 +267,10 @@ def train_cifar(run_name, mlp_type, optimizer_name, mlp_depth, mlp_width, datase
         test_loss_hist.append(test_loss)
         test_acc_hist.append(test_acc)
         
-        # Compute average gradient norms and cosine similarities for this epoch.
         avg_grad_norms = {k: sum(v_list)/len(v_list) for k, v_list in aggregated_grad_norms.items()}
         avg_grad_cosines = {k: sum(v_list)/len(v_list) for k, v_list in aggregated_grad_cosines.items()}
         avg_weight_norms = {k: sum(v_list)/len(v_list) for k, v_list in aggregated_weight_norms.items()}
         avg_dormant_neurons = {k: sum(v_list)/len(v_list) for k, v_list in aggregated_dormant_neurons.items()}
-        # Log metrics to wandb.
         log_dict = {
             "epoch": epoch + 1,
             "train_loss": train_loss,

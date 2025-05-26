@@ -30,11 +30,9 @@ from utils.compute_hns import _compute_hns
 from utils.utils import parse_cnn_size, parse_mlp_depth, parse_mlp_width, get_optimizer, get_grad_norms
 from utils.args import PPOArgs
 from utils.wrappers import RecordEpisodeStatistics
-from utils.compute_churn import compute_ppo_metrics, compute_ranks_from_features, plot_representation_change, plot_activations_range
+from utils.representation_dynamics import compute_ppo_metrics, compute_ranks_from_features
 from utils.wrappers import RecordEpisodeStatistics
-from models.agent import SharedTrunkPPOAgent, DecoupledPPOAgent
-
-from IPython import embed
+from models.agent import SharedTrunkPPOAgent
 
 def gae(next_obs, next_done, container):
     next_value = get_value(next_obs).reshape(-1)
@@ -222,7 +220,7 @@ if __name__ == "__main__":
         "trunk_num_layers": trunk_num_layers,
         "device": device,
     }
-    agent_clss = SharedTrunkPPOAgent if args.shared_trunk else DecoupledPPOAgent
+    agent_clss = SharedTrunkPPOAgent
     
     agent = agent_clss(**agent_cfg)
     old_agent = agent_clss(**agent_cfg)
@@ -360,32 +358,6 @@ if __name__ == "__main__":
                         for key, values in avg_grad_norms.items():
                             log_dict[f"grad_norms/{key}"] = np.mean(values)
         
-        # log images                 
-        # learning dynamics change per iteration
-        # if global_step_burnin is not None and iteration in args.log_iterations_img and prev_container is not None:
-        #     try:
-        #         plot_representation_change(
-        #             agent,
-        #             old_agent,
-        #             container["obs"],
-        #             prev_container["obs"],
-        #             global_step=global_step,
-        #             num_points=300,
-        #             name="learning_dynamics_change_per_iteration",
-        #         )
-                
-        #         # Add activation range plots similar to PQN
-        #         try:
-        #             plot_activations_range(
-        #                 agent,
-        #                 container["obs"],
-        #                 global_step=global_step,
-        #             )
-        #         except Exception as e:
-        #             print(f"Failed to plot activations range: {e}")
-        #     except Exception as e:
-        #         print(f"Failed to compute learning dynamics plot per iteration: {e}")
-
         # logging
         if global_step_burnin is not None and iteration in args.log_iterations:
             cur_time = time.time()

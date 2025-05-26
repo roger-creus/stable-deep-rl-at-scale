@@ -1,6 +1,5 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import numpy as np
 from utils.utils import get_act_fn_clss, get_act_fn_functional
 
@@ -26,14 +25,12 @@ class AtariCNN(nn.Module):
         act_ = get_act_fn_clss(activation_fn)
         cnn = []
         for out_channel, kernel_size, stride, ln_size in zip(cnn_channels, kernel_sizes, strides, ln_sizes):
-            # Add a convolutional layer
             cnn.append(
                 layer_init(
                     nn.Conv2d(in_channels, out_channel, kernel_size, stride=stride, device=device),
                 )
             )
                         
-            # Add a layer normalization layer if needed
             if use_ln:
                 cnn.append(
                     nn.LayerNorm(
@@ -41,7 +38,6 @@ class AtariCNN(nn.Module):
                     )
                 )
                 
-            # Add an activation
             cnn.append(
                 act_()
             )
@@ -50,7 +46,6 @@ class AtariCNN(nn.Module):
             input_size = output_size
             in_channels = out_channel
             
-        # Add a flattening layer
         cnn.append(
             nn.Flatten()
         )

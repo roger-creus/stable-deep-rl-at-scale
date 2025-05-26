@@ -32,7 +32,6 @@ class MLP(nn.Module):
         if num_layers == 1: hidden_size = output_size
         
         for i in range(num_layers):
-            # Input layer
             if i == 0:
                 if linear_clss.__name__ == 'NoisyLinear':
                     layer = linear_clss(input_size, hidden_size, device=device)
@@ -41,7 +40,6 @@ class MLP(nn.Module):
                 if use_spectral_norm:
                     layer = spectral_norm(layer)
                 mlp.append(layer)
-            # Output layer
             elif i == num_layers - 1:
                 if linear_clss.__name__ == 'NoisyLinear':
                     layer = linear_clss(hidden_size, output_size, device=device)
@@ -50,7 +48,6 @@ class MLP(nn.Module):
                 if use_spectral_norm:
                     layer = spectral_norm(layer)
                 mlp.append(layer)
-            # Hidden layers
             else:
                 if linear_clss.__name__ == 'NoisyLinear':
                     layer = linear_clss(hidden_size, hidden_size, device=device)
@@ -61,13 +58,11 @@ class MLP(nn.Module):
                 mlp.append(layer)
                 
             if i < num_layers - 1:
-                # Add a layer normalization layer if needed
                 if use_ln:
                     mlp.append(
                         nn.LayerNorm(hidden_size, device=device)
                     )
                 
-                # Add a ReLU activation
                 mlp.append(
                     act_()
                 )
@@ -80,9 +75,6 @@ class MLP(nn.Module):
                 if last_act:
                     mlp.append(act_())
                         
-                    
-                   
-            
         self.net = nn.Sequential(*mlp)
         
     def forward(self, x):
@@ -223,7 +215,6 @@ class MultiSkipResidualMLP(nn.Module):
         act_fn_class = get_act_fn_clss(activation_fn)
         layers = []
         
-        # Initial linear layer and optional layer norm.
         if linear_clss.__name__ == 'NoisyLinear':
             layer = linear_clss(input_size, hidden_size, device=device)
         else:
@@ -236,17 +227,13 @@ class MultiSkipResidualMLP(nn.Module):
         if use_ln:
             layers.append(nn.LayerNorm(hidden_size, device=device))
         
-        # Store the output as the global skip.
         layers.append(StoreGlobalSkip())
         
-        # Append the sequence of multi-skip residual blocks.
         for _ in range(num_layers):
             layers.append(MultiSkipResidualBlock(hidden_size, use_ln=use_ln, use_spectral_norm=use_spectral_norm, activation_fn=activation_fn, device=device, linear_clss=linear_clss))
         
-        # Extract the current output (discarding the global skip from the tuple).
         layers.append(ExtractOutput())
         
-        # Final linear layer and optional layer norm/activation.
         if linear_clss.__name__ == 'NoisyLinear':
             layer = linear_clss(hidden_size, output_size, device=device)
         else:
@@ -319,12 +306,10 @@ class DenseNetMLP(nn.Module):
         act_fn_class = get_act_fn_clss(activation_fn)
         layers = []
         
-        # Calculate growth rate to maintain reasonable dimensions
         growth_rate = hidden_size // max(1, num_layers)
         if growth_rate == 0:
             growth_rate = hidden_size
         
-        # Initial layer to project input to hidden_size
         if linear_clss.__name__ == 'NoisyLinear':
             layer = linear_clss(input_size, hidden_size, device=device)
         else:
@@ -339,7 +324,6 @@ class DenseNetMLP(nn.Module):
         
         layers.append(act_fn_class())
         
-        # Dense blocks
         current_size = hidden_size
         for _ in range(num_layers):
             block = DenseBlock(
@@ -354,7 +338,6 @@ class DenseNetMLP(nn.Module):
             layers.append(block)
             current_size += growth_rate
         
-        # Final layer to project to output_size
         if linear_clss.__name__ == 'NoisyLinear':
             layer = linear_clss(current_size, output_size, device=device)
         else:
