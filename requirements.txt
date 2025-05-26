@@ -17,9 +17,7 @@ torchrl-nightly==2025.1.1
 tqdm
 tyro
 wandb
-IPython
 scikit-learn
 opencv-contrib-python-headless
-umap
-umap-learn
 kron-torch
+torch_optimizer
