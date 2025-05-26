@@ -36,6 +36,15 @@ def parse_mlp_width(net_size):
     elif net_size == "xlarge":
         return 512 * 10
     
+def get_mlp_num_params(mlp_width, mlp_depth):
+    neurons_per_layer = parse_mlp_width(mlp_width)
+    num_layers = parse_mlp_depth(mlp_depth, "default")
+    params = 3136 * neurons_per_layer + neurons_per_layer
+    params += (num_layers - 1) * (neurons_per_layer * neurons_per_layer + neurons_per_layer)
+    params += neurons_per_layer
+    return params
+
+    
 def get_act_fn_functional(act_fn):
     if act_fn == "relu":
         return F.relu

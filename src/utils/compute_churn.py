@@ -671,3 +671,60 @@ def plot_activations_range(mus, stds, global_step, max_neurons=20):
     plt.suptitle(f"Activation Distributions at Step {global_step}")
     plt.tight_layout()
     plt.savefig(f"activation_distributions_{global_step}.png")
+    
+    
+def compute_losslandscape_metrics(agent, obs, returns, actions, power_iters=20, trace_samples=50, eps=1e-3):
+    """
+    Returns:
+      lambda_max : largest Hessian eigenvalue (scalar)
+      trace_est  : Hutchinson’s estimator of Tr(H) (scalar)
+    """
+    # 1) Compute the scalar loss
+    predicted_qvalues = agent.get_Q(agent.get_representation(obs)).gather(1, actions.unsqueeze(1)).squeeze(1)
+    loss = F.mse_loss(predicted_qvalues, returns)
+    
+    # 2) Gather parameters and flatten into one vector
+    params = [p for p in agent.network.parameters() if p.requires_grad]
+    flat_params = torch.cat([p.view(-1) for p in params])
+    num_params = flat_params.numel()
+    
+    # Helper: compute gradient-vector product g = ∇_θ loss ⋅ v
+    def hvp(v):
+        # Zero grads
+        agent.network.zero_grad()
+        # First-order gradient
+        grad_params = torch.autograd.grad(loss, params, create_graph=True)
+        # Flatten gradient
+        flat_grad = torch.cat([g.contiguous().view(-1) for g in grad_params])
+        # Dot with v
+        g_v = torch.dot(flat_grad, v)
+        # Second derivative: ∇_θ (∇_θ loss ⋅ v)
+        hv = torch.autograd.grad(g_v, params, retain_graph=True)
+        return torch.cat([h.contiguous().view(-1) for h in hv])
+    
+    # --- (1) Power-iteration for top eigenvalue ---
+    # Initialize a random unit vector
+    v = torch.randn(num_params, device=flat_params.device)
+    v /= v.norm()
+    for _ in range(power_iters):
+        Hv = hvp(v)
+        v = Hv.detach()
+        v /= v.norm()
+    # Rayleigh quotient λ ≈ vᵀ H v
+    Hv = hvp(v)
+    lambda_max = torch.dot(v, Hv).item()
+    
+    # --- (2) Hutchinson trace estimator ---
+    trace_est = 0.0
+    for _ in range(trace_samples):
+        # Rademacher ±1 vector
+        z = torch.randint(0, 2, (num_params,), device=flat_params.device, dtype=torch.float32)
+        z[z == 0] = -1.0
+        Hz = hvp(z)
+        trace_est += torch.dot(z, Hz).item()
+    trace_est /= trace_samples
+    
+    return {
+        "loss_landscape/lambda_max": lambda_max,
+        "loss_landscape/trace_est": trace_est,
+    }

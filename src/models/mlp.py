@@ -72,11 +72,12 @@ class MLP(nn.Module):
                     act_()
                 )
             elif i == num_layers - 1:
-                if last_act and use_ln:
+                if use_ln:
                     mlp.append(
                         nn.LayerNorm(output_size, device=device)
                     )
-                elif last_act:
+                
+                if last_act:
                     mlp.append(act_())
                         
                     

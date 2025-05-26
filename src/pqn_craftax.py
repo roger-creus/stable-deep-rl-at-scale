@@ -79,7 +79,7 @@ class PQN_Craftax_Args:
     
     start_e: float = 1
     """the starting epsilon for exploration"""
-    end_e: float = 0.005
+    end_e: float = 0.01
     """the ending epsilon for exploration"""
     exploration_fraction: float = 0.10
     """the fraction of `total-timesteps` it takes from start-e to go end-e"""
@@ -112,6 +112,7 @@ class PQN_Craftax_Agent(nn.Module):
             use_ln=use_ln,
             device=device,
             last_act=True,
+            activation_fn="relu",
         )
      
         self.q_func = nn.Sequential(
@@ -158,6 +159,7 @@ if __name__ == "__main__":
         training_csv_writer = make_training_csv_craftax(f"./runs/{run_name}")
     else:
         raise ValueError(f"Unknown environment: {args.env_id}")
+    
     #################################################
 
     # TRY NOT TO MODIFY: seeding
@@ -260,7 +262,7 @@ if __name__ == "__main__":
             returns = torch.zeros_like(rewards).to(device)
             for t in reversed(range(args.num_steps)):
                 if t == args.num_steps - 1:
-                    next_value = torch.max(q_network(next_obs), dim=-1)
+                    next_value = torch.max(q_network(next_obs), dim=-1)[0]
                     nextnonterminal = 1.0 - next_done.float()
                     returns[t] = rewards[t] + args.gamma * next_value * nextnonterminal
                 else:

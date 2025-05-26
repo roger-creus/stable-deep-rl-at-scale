@@ -23,7 +23,6 @@ class PQNArgs:
     """the learning rate of the optimizer"""
     anneal_lr: bool = False
     """Toggle learning rate annealing for policy and value networks"""
-
     # Algorithm specific arguments
     env_id: str = "Breakout-v5"
     """the id of the environment"""
@@ -51,13 +50,13 @@ class PQNArgs:
     """the lambda for the Q-Learning algorithm"""
     
     # Agent Args
-    use_ln: bool = True
+    use_ln: bool = True  # True, False
     """whether to use layer normalization"""
     use_spectral_norm: bool = False
     """whether to use spectral normalization"""
     cnn_type: str = "atari"
     """the type of the CNN"""
-    mlp_type: str = "default" #default,residual
+    mlp_type: str = "default" #default,residual,multiskip,densenet
     """the type of the MLP"""
     cnn_size: str = "medium" # small, medium, large
     """the size of the network"""
@@ -67,7 +66,7 @@ class PQNArgs:
     """the size of the network"""
     activation_fn: str = "relu"
     """the activation function of the network"""
-    optimizer: str = "radam" # adam, radam, kron
+    optimizer: str = "radam" # radam, kron
     """the optimizer of the network"""
     
     # Soft PQN Args
@@ -163,9 +162,9 @@ class PPOArgs:
     # Agent Args
     use_ln: bool = False
     """whether to use layer normalization"""
-    cnn_type: str = "atari"
+    cnn_type: str = "atari"  # atari, impala
     """the type of the CNN"""
-    mlp_type: str = "default" #default,residual
+    mlp_type: str = "default" # fully connected,residual,multiskip,densenet
     """the type of the MLP"""
     cnn_size: str = "medium" # small, medium, large
     """the size of the network"""
@@ -175,7 +174,7 @@ class PPOArgs:
     """the size of the network"""
     activation_fn: str = "relu"
     """the activation function of the network"""
-    optimizer: str = "radam" # adam, radam, kron
+    optimizer: str = "radam" # radam, kron
     """the optimizer of the network"""
     shared_trunk: bool = True
     """whether to use a shared trunk agent"""

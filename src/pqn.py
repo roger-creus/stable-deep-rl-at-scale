@@ -29,7 +29,7 @@ from utils.compute_hns import _compute_hns
 from utils.loss_landscape import plot_loss_landscape
 from utils.utils import parse_cnn_size, parse_mlp_depth, parse_mlp_width, get_optimizer, get_grad_norms, get_grad_cosine
 from utils.args import PQNArgs
-from utils.compute_churn import compute_representation_and_q_churn, compute_ranks_from_features, plot_representation_change, plot_activations_range
+from utils.compute_churn import compute_representation_and_q_churn, compute_ranks_from_features, plot_representation_change, plot_activations_range, compute_losslandscape_metrics
 from utils.wrappers import RecordEpisodeStatistics
 from models.agent import PQNAgent
 
@@ -320,9 +320,12 @@ if __name__ == "__main__":
                         print(f"Failed to compute representation and q churn: {e}")
                         
                     try:
-                        ranks = compute_ranks_from_features(agent, cntner_churn["obs"])
+                        with torch.no_grad():
+                            ranks = compute_ranks_from_features(agent, cntner_churn["obs"])
                     except:
                         ranks = {}
+                        
+                    loss_landscape_metrics = compute_losslandscape_metrics(agent, cntner_churn["obs"], cntner_churn["returns"], cntner_churn["actions"])
                 
                 # In the last epoch, compute grad metrics for every minibatch.
                 if (epoch == args.update_epochs - 1 and global_step_burnin is not None and  iteration in args.log_iterations):
@@ -398,7 +401,7 @@ if __name__ == "__main__":
                     
                 }
                 
-                logs = {**logs, **log_dict, **churn_stats, **ranks}
+                logs = {**logs, **log_dict, **churn_stats, **ranks, **loss_landscape_metrics}
 
             wandb.log(
                 {"charts/global_step": global_step, **logs}, step=global_step

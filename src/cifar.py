@@ -70,7 +70,7 @@ def train_cifar(run_name, mlp_type, optimizer_name, mlp_depth, mlp_width, datase
     
     # Initialize wandb.
     wandb.init(
-        project=dataset_name,
+        project=f"{dataset_name}_good",
         name=run_name,
         config={
             "mlp_type": mlp_type,

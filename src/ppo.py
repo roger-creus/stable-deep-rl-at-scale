@@ -241,10 +241,12 @@ if __name__ == "__main__":
     opt_kwargs = {}
     if args.optimizer == "shampoo":
         opt_kwargs = {
-            "update_freq": 75
+            "update_freq": 5
         }
-    elif "adam" in args.optimizer:
+    elif "adam" in args.optimizer or "apollo" in args.optimizer:
         opt_kwargs = {"eps": 1.0e-5}
+        if "apollo" in args.optimizer:
+            opt_kwargs["beta"] = 0.995 
     else:
         opt_kwargs = {}
     

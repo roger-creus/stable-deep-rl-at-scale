@@ -16,7 +16,9 @@ run_cifar.sh
 run_regression.sh
 run_gn_exps.sh
 run_pqn_targets.sh
+run_craftax.sh
 
 *.sif
 *.pyc
 *.csv
+*.png

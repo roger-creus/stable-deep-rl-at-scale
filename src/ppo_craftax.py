@@ -120,8 +120,12 @@ class PPO_Craftax_Agent(nn.Module):
             activation_fn="tanh",
         )
      
-        self.critic = layer_init(nn.Linear(512, 1), std=1.0)
-        self.actor = layer_init(nn.Linear(512, envs.single_action_space.n), std=1.0)
+        self.critic = nn.Sequential(
+            layer_init(nn.Linear(512, 1), std=1.0)
+        )
+        self.actor = nn.Sequential(
+            layer_init(nn.Linear(512, envs.single_action_space.n), std=1.0)
+        )
 
     def get_value(self, x):
         hidden = self.network(x)
