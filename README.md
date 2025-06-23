@@ -6,6 +6,7 @@ This repository contains the code for the paper:
 by *Roger Creus Castanyer, Johan Obando-Ceron, Lu Li, Pierre-Luc Bacon, Glen Berseth, Aaron Courville, and Pablo Samuel Castro*  
 *Work done at Mila Quebec AI Institute and University of Montreal.*
 
+## 📄 **[Read the Full Paper on arXiv ▶️](https://arxiv.org/pdf/2506.15544.pdf)**
 ---
 
 ## 📦 Installation
