@@ -21,3 +21,4 @@ scikit-learn
 opencv-contrib-python-headless
 kron-torch
 torch_optimizer
+umap==0.1.1

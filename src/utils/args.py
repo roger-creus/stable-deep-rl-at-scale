@@ -69,26 +69,6 @@ class PQNArgs:
     optimizer: str = "radam" # radam, kron
     """the optimizer of the network"""
     
-    # Soft PQN Args
-    alpha_lr: float = 1e-4
-    """the learning rate of the alpha parameter"""
-    target_entropy_init_scale: float = 0.98
-    """the maximum target entropy ratio"""
-    target_entropy_end_scale: float = 0.15
-    """the minimum target entropy ratio"""
-    target_entropy_fraction: float = 0.8
-    """the fraction of `total_timesteps` it takes from start to end"""
-    
-    # HLGauss PQN
-    v_min: float = -10.0
-    """the minimum value of the distribution"""
-    v_max: float = 10.0
-    """the maximum value of the distribution"""
-    num_atoms: int = 51
-    """the number of atoms in the distribution"""
-    smoothing_ratio: float = 0.75
-    """HLGauss sigma"""
-
     # to be filled in runtime
     batch_size: int = 0
     """the batch size (computed in runtime)"""
