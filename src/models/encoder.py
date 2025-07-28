@@ -8,6 +8,10 @@ def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
     torch.nn.init.constant_(layer.bias, bias_const)
     return layer
 
+class L2FeatureNorm(nn.Module):
+    def forward(self, x):
+        return nn.functional.normalize(x, p=2, dim=1)
+
 class AtariCNN(nn.Module):
     def __init__(
         self,
@@ -19,7 +23,8 @@ class AtariCNN(nn.Module):
         strides = [4, 2, 1],
         in_channels = 4,
         input_size = 84,
-        device='cpu'
+        device='cpu',
+        use_l2_norm=False,
     ):
         super().__init__()
         act_ = get_act_fn_clss(activation_fn)
@@ -49,6 +54,9 @@ class AtariCNN(nn.Module):
         cnn.append(
             nn.Flatten()
         )
+        if use_l2_norm:
+            # Based on OFFLINE Q-LEARNING ON DIVERSE MULTI-TASK DATA BOTH SCALES AND GENERALIZES
+            cnn.append(L2FeatureNorm())
         self.cnn = nn.Sequential(*cnn)
         
         self.output_size = out_channel * output_size * output_size

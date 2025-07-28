@@ -21,6 +21,10 @@ class PQNArgs:
     # Learning rate schedule
     learning_rate: float = 2.5e-4
     """the learning rate of the optimizer"""
+    weight_decay: float = 1e-4
+    """the WD of the optimizer"""
+    lr_schedule: str = "constant"  # options: constant, warmup, cosine, cyclic
+    warmup_steps: int = 10000
     anneal_lr: bool = False
     """Toggle learning rate annealing for policy and value networks"""
     # Algorithm specific arguments

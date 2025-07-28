@@ -76,12 +76,20 @@ def get_act_fn_clss(act_fn):
         return torch.nn.Sigmoid
     elif act_fn == "silu":
         return torch.nn.SiLU
+    elif act_fn == "gelu":
+        return torch.nn.GELU
+    elif act_fn == "mish":
+        return torch.nn.Mish
+    elif act_fn == "softplus":
+        return torch.nn.Softplus
     else:
-        raise ValueError(f"Unknown activation function: {act_fn}")
+        raise ValueError(f"Unsupported activation function: {act_fn}")
     
 def get_optimizer(optimizer):
     if optimizer == "adam":
         return torch.optim.Adam
+    elif optimizer == "adamw":
+        return torch.optim.AdamW
     elif optimizer == "radam":
         return torch.optim.RAdam
     elif optimizer == "sgd":

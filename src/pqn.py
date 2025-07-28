@@ -121,7 +121,7 @@ update = tensordict.nn.TensorDictModule(
 if __name__ == "__main__":
     ####### Argument Parsing #######
     args = tyro.cli(PQNArgs)
-    
+
     batch_size = int(args.num_envs * args.num_steps)
     args.minibatch_size = batch_size // args.num_minibatches
     args.batch_size = args.num_minibatches * args.minibatch_size
@@ -202,7 +202,12 @@ if __name__ == "__main__":
         }
     else:
         opt_kwargs = {}
-        
+
+    if args.optimizer == "adamw":
+        opt_kwargs = {
+            "weight_decay": args.weight_decay  # e.g., 1e-4
+        }
+
     optimizer_clss = get_optimizer(args.optimizer)
     optimizer = optimizer_clss(
         agent.parameters(),
@@ -210,6 +215,25 @@ if __name__ == "__main__":
         **opt_kwargs
     )
     print(optimizer)
+
+    if args.lr_schedule == "warmup":
+        def warmup_lambda(step):
+            return min(1.0, step / args.warmup_steps)
+        scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=warmup_lambda)
+    elif args.lr_schedule == "cosine":
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.num_iterations)
+    elif args.lr_schedule == "cyclic":
+        scheduler = torch.optim.lr_scheduler.CyclicLR(
+            optimizer,
+            base_lr=args.learning_rate * 0.1,
+            max_lr=args.learning_rate,
+            step_size_up=args.num_iterations // 4,
+            mode="triangular2",
+            cycle_momentum=False
+        )
+    else:
+        scheduler = None
+
 
     ####### Executables #######
     policy = agent_inference.forward
@@ -256,6 +280,9 @@ if __name__ == "__main__":
             frac = 1.0 - (iteration - 1.0) / args.num_iterations
             lrnow = frac * args.learning_rate
             optimizer.param_groups[0]["lr"].copy_(lrnow)
+
+        if scheduler is not None:
+            scheduler.step()
 
         # collect rollout
         torch.compiler.cudagraph_mark_step_begin()
