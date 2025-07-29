@@ -5,6 +5,13 @@ import torch.nn as nn
 from kron_torch import Kron
 import torch_optimizer as optim
 
+class CReLU(nn.Module):
+    def forward(self, x):
+        return torch.cat([nn.functional.relu(x), nn.functional.relu(-x)], dim=-1)
+
+def CReLU_functional(x):
+    return torch.cat([nn.functional.relu(x), nn.functional.relu(-x)], dim=-1)
+
 def parse_cnn_size(net_size):
     if net_size == "small":
         return (16, 32, 32)
@@ -58,6 +65,10 @@ def get_act_fn_functional(act_fn):
         return F.sigmoid
     elif act_fn == "silu":
         return F.silu
+    elif act_fn == "gelu":
+        return F.gelu
+    elif act_fn == "crelu":
+        return CReLU_functional
     else:
         raise ValueError(f"Unknown activation function: {act_fn}")
 
@@ -82,6 +93,8 @@ def get_act_fn_clss(act_fn):
         return torch.nn.Mish
     elif act_fn == "softplus":
         return torch.nn.Softplus
+    elif act_fn == "crelu":
+        return CReLU
     else:
         raise ValueError(f"Unsupported activation function: {act_fn}")
     

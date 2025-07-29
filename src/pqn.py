@@ -180,6 +180,8 @@ if __name__ == "__main__":
         "trunk_hidden_size": trunk_hidden_size,
         "trunk_num_layers": trunk_num_layers,
         "device": device,
+        "use_l2_norm": args.use_l2_norm,
+        "weight_clip_value": args.weight_clip_value
     }
     agent = PQNAgent(**agent_cfg)
     old_agent = PQNAgent(**agent_cfg)
@@ -196,10 +198,17 @@ if __name__ == "__main__":
     if args.optimizer == "kron":
         args.learning_rate /= 3.0
         
-    if args.optimizer == "shampoo":
+    elif args.optimizer == "shampoo":
         opt_kwargs = {
             "update_freq": 75
         }
+    elif "adam" in args.optimizer:
+        if args.use_weight_decay:
+            opt_kwargs = {
+                "weight_decay": 1e-4
+            }
+        else:
+            opt_kwargs = {}
     else:
         opt_kwargs = {}
 

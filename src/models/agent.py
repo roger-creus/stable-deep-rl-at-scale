@@ -24,7 +24,9 @@ class BasePQNAgent(nn.Module):
         trunk_output_size=512,
         trunk_num_layers=1,
         activation_fn="relu",
-        device=None
+        device=None,
+        use_l2_norm=False,
+        weight_clip_value=None
     ):
         super().__init__()
         self.envs = envs
@@ -34,8 +36,11 @@ class BasePQNAgent(nn.Module):
         self.device = device
         self.act_fn_F = get_act_fn_functional(activation_fn)
         
+        
+        mlp_kwargs = {}
         if mlp_type == "default":
             mlp_clss = MLP
+            mlp_kwargs["weight_clip_value"] = weight_clip_value
         elif mlp_type == "residual":
             mlp_clss = ResidualMLP
         elif mlp_type == "multiskip_residual":
@@ -50,7 +55,8 @@ class BasePQNAgent(nn.Module):
                 cnn_channels=cnn_channels,
                 use_ln=use_ln,
                 activation_fn=activation_fn,
-                device=device
+                device=device,
+                use_l2_norm=use_l2_norm
             )
         elif cnn_type == "impala":
             self.network = ImpalaCNN(
@@ -77,7 +83,8 @@ class BasePQNAgent(nn.Module):
             use_spectral_norm=use_spectral_norm,
             activation_fn=activation_fn,
             device=device,
-            last_act=False
+            last_act=False,
+            **mlp_kwargs
         )
         
         self.action_dim = envs.single_action_space.n
@@ -220,7 +227,9 @@ class PQNAgent(BasePQNAgent):
         trunk_output_size=512,
         trunk_num_layers=1,
         activation_fn="relu",
-        device=None
+        device=None,
+        use_l2_norm=False,
+        weight_clip_value=None
     ):
         super().__init__(
             envs,
@@ -233,7 +242,9 @@ class PQNAgent(BasePQNAgent):
             trunk_output_size=trunk_output_size,
             trunk_num_layers=trunk_num_layers,
             activation_fn=activation_fn,
-            device=device
+            device=device,
+            use_l2_norm=use_l2_norm,
+            weight_clip_value=weight_clip_value
         )
         act_ = get_act_fn_clss(activation_fn)
         self.q_func = nn.Sequential(

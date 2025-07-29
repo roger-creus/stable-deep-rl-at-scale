@@ -21,10 +21,10 @@ class PQNArgs:
     # Learning rate schedule
     learning_rate: float = 2.5e-4
     """the learning rate of the optimizer"""
-    weight_decay: float = 1e-4
-    """the WD of the optimizer"""
     lr_schedule: str = "constant"  # options: constant, warmup, cosine, cyclic
+    """the learning rate schedule"""
     warmup_steps: int = 10000
+    """the number of warmup steps"""
     anneal_lr: bool = False
     """Toggle learning rate annealing for policy and value networks"""
     # Algorithm specific arguments
@@ -72,6 +72,14 @@ class PQNArgs:
     """the activation function of the network"""
     optimizer: str = "radam" # radam, kron
     """the optimizer of the network"""
+    
+    # ABLAITIONS
+    use_l2_norm: bool = False
+    """whether to use L2 normalization"""
+    use_weight_decay: bool = False
+    """whether to use adam with weight decay"""
+    weight_clip_value: float = None
+    """the value to clip the weights"""
     
     # to be filled in runtime
     batch_size: int = 0
