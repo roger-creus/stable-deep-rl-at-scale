@@ -27,6 +27,10 @@ class AtariCNN(nn.Module):
         use_l2_norm=False,
     ):
         super().__init__()
+        
+        # for CNN use relu
+        if activation_fn == "crelu": activation_fn = "relu"
+        
         act_ = get_act_fn_clss(activation_fn)
         cnn = []
         for out_channel, kernel_size, stride, ln_size in zip(cnn_channels, kernel_sizes, strides, ln_sizes):

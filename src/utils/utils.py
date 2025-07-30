@@ -8,8 +8,8 @@ import torch_optimizer as optim
 class CReLU(nn.Module):
     def forward(self, x):
         return torch.cat([nn.functional.relu(x), nn.functional.relu(-x)], dim=-1)
-
-def CReLU_functional(x):
+    
+def crelu_functional(x):
     return torch.cat([nn.functional.relu(x), nn.functional.relu(-x)], dim=-1)
 
 def parse_cnn_size(net_size):
@@ -68,7 +68,7 @@ def get_act_fn_functional(act_fn):
     elif act_fn == "gelu":
         return F.gelu
     elif act_fn == "crelu":
-        return CReLU_functional
+        return crelu_functional
     else:
         raise ValueError(f"Unknown activation function: {act_fn}")
 

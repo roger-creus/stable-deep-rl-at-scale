@@ -17,6 +17,9 @@ class CReLU(nn.Module):
     def forward(self, x):
         return torch.cat([nn.functional.relu(x), nn.functional.relu(-x)], dim=-1)
     
+def crelu_functional(x):
+    return torch.cat([nn.functional.relu(x), nn.functional.relu(-x)], dim=-1)
+
 class MLP(nn.Module):
     def __init__(
         self,

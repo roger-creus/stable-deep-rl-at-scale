@@ -4,7 +4,7 @@ import numpy as np
 from torch.distributions import Categorical
 from models.encoder import AtariCNN, ImpalaCNN, ConvSequence
 from models.mlp import MLP, ResidualMLP, ResidualBlock, MultiSkipResidualMLP, MultiSkipResidualBlock, DenseNetMLP, DenseBlock
-from utils.utils import get_act_fn_clss, get_act_fn_functional
+from utils.utils import get_act_fn_clss, get_act_fn_functional, CReLU, crelu_functional
 
 def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
     torch.nn.init.orthogonal_(layer.weight, std)    
@@ -246,7 +246,11 @@ class PQNAgent(BasePQNAgent):
             use_l2_norm=use_l2_norm,
             weight_clip_value=weight_clip_value
         )
+        
+        
+        if activation_fn == "crelu": activation_fn = "relu"
         act_ = get_act_fn_clss(activation_fn)
+            
         self.q_func = nn.Sequential(
             act_(),
             layer_init(nn.Linear(trunk_output_size, self.action_dim, device=device), std=0.01),
