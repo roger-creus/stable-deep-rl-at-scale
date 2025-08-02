@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 from torch.distributions import Categorical
-from models.encoder import AtariCNN, ImpalaCNN, ConvSequence
+from models.encoder import AtariCNN, ImpalaCNN, ConvSequence, HadaMaxCNN
 from models.mlp import MLP, ResidualMLP, ResidualBlock, MultiSkipResidualMLP, MultiSkipResidualBlock, DenseNetMLP, DenseBlock
 from utils.utils import get_act_fn_clss, get_act_fn_functional
 
@@ -54,6 +54,13 @@ class BasePQNAgent(nn.Module):
             )
         elif cnn_type == "impala":
             self.network = ImpalaCNN(
+                cnn_channels=cnn_channels,
+                use_ln=use_ln,
+                activation_fn=activation_fn,
+                device=device
+            )
+        elif cnn_type == "hadamax":
+            self.network = HadaMaxCNN(
                 cnn_channels=cnn_channels,
                 use_ln=use_ln,
                 activation_fn=activation_fn,

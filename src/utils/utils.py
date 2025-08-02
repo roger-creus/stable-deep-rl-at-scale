@@ -58,6 +58,8 @@ def get_act_fn_functional(act_fn):
         return F.sigmoid
     elif act_fn == "silu":
         return F.silu
+    elif act_fn == "gelu":
+        return F.gelu
     else:
         raise ValueError(f"Unknown activation function: {act_fn}")
 
@@ -76,6 +78,8 @@ def get_act_fn_clss(act_fn):
         return torch.nn.Sigmoid
     elif act_fn == "silu":
         return torch.nn.SiLU
+    elif act_fn == "gelu":
+        return torch.nn.GELU
     else:
         raise ValueError(f"Unknown activation function: {act_fn}")
     

@@ -155,10 +155,13 @@ if __name__ == "__main__":
     envs = envpool.make(
         args.env_id,
         env_type="gym",
-        num_envs=args.num_envs,
-        episodic_life=True,
+        num_envs=args.num_envs,        
         reward_clip=True,
         seed=args.seed,
+        episodic_life=True,
+        #repeat_action_probability=0.25, # CHANGED FOR LAST EXPS
+       # noop_max=1, # CHANGED FOR LAST EXPS
+       # full_action_space=True, # CHANGED FOR LAST EXPS
     )
     envs.num_envs = args.num_envs
     envs.single_action_space = envs.action_space
@@ -287,7 +290,7 @@ if __name__ == "__main__":
                 if (epoch == 0 and b_idx == 0 and global_step_burnin is not None and iteration in args.log_iterations):
                     try:
                         with torch.no_grad():
-                            max_to_keep = min(2048, len(container_flat))
+                            max_to_keep = min(512, len(container_flat))
                             cntner_churn = container_flat[torch.randperm(len(container_flat))[:max_to_keep]]
                             churn_stats = compute_representation_and_q_churn(agent, old_agent, cntner_churn["obs"])
                             
@@ -302,14 +305,20 @@ if __name__ == "__main__":
                         }
                     except Exception as e:
                         print(f"Failed to compute representation and q churn: {e}")
+                        churn_stats = {}
                         
                     try:
                         with torch.no_grad():
                             ranks = compute_ranks_from_features(agent, cntner_churn["obs"])
-                    except:
+                    except Exception as e:
+                        print(f"Failed to compute ranks: {e}")
                         ranks = {}
                         
-                    loss_landscape_metrics = compute_losslandscape_metrics(agent, cntner_churn["obs"], cntner_churn["returns"], cntner_churn["actions"])
+                    try:
+                        loss_landscape_metrics = compute_losslandscape_metrics(agent, cntner_churn["obs"], cntner_churn["returns"], cntner_churn["actions"])
+                    except Exception as e:
+                        print(f"Failed to compute loss landscape metrics: {e}")
+                        loss_landscape_metrics = {}
                 
                 # In the last epoch, compute grad metrics for every minibatch.
                 if (epoch == args.update_epochs - 1 and global_step_burnin is not None and  iteration in args.log_iterations):
