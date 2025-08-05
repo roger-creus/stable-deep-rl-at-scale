@@ -2,8 +2,8 @@ import torch
 import torch.nn as nn
 import numpy as np
 from torch.distributions import Categorical
-from models.encoder import AtariCNN, ImpalaCNN, ConvSequence, HadaMaxCNN
-from models.mlp import MLP, ResidualMLP, ResidualBlock, MultiSkipResidualMLP, MultiSkipResidualBlock, DenseNetMLP, DenseBlock
+from models.encoder import AtariCNN, ImpalaCNN, ConvSequence, HadaMaxCNN, SuperHadaMaxCNN
+from models.mlp import MLP, ResidualMLP, ResidualBlock, MultiSkipResidualMLP, MultiSkipResidualBlock, DenseNetMLP, DenseBlock, SuperHadaMaxMLP
 from utils.utils import get_act_fn_clss, get_act_fn_functional
 
 def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
@@ -24,6 +24,7 @@ class BasePQNAgent(nn.Module):
         trunk_output_size=512,
         trunk_num_layers=1,
         activation_fn="relu",
+        num_paths=4,
         device=None
     ):
         super().__init__()
@@ -42,29 +43,34 @@ class BasePQNAgent(nn.Module):
             mlp_clss = MultiSkipResidualMLP
         elif mlp_type == "densenet":
             mlp_clss = DenseNetMLP
+        elif mlp_type == "super_hadamax":
+            mlp_clss = SuperHadaMaxMLP
         else:
             raise NotImplementedError(f"Unknown mlp_type: {mlp_type}")
         
+        cnn_args = {
+            "cnn_channels": cnn_channels,
+            "use_ln": use_ln,
+            "activation_fn": activation_fn,
+            "device": device
+        }
+        
         if cnn_type == "atari":
             self.network = AtariCNN(
-                cnn_channels=cnn_channels,
-                use_ln=use_ln,
-                activation_fn=activation_fn,
-                device=device
+                **cnn_args
             )
         elif cnn_type == "impala":
             self.network = ImpalaCNN(
-                cnn_channels=cnn_channels,
-                use_ln=use_ln,
-                activation_fn=activation_fn,
-                device=device
+                **cnn_args
             )
         elif cnn_type == "hadamax":
             self.network = HadaMaxCNN(
-                cnn_channels=cnn_channels,
-                use_ln=use_ln,
-                activation_fn=activation_fn,
-                device=device
+                **cnn_args
+            )
+        elif cnn_type == "super_hadamax":
+            self.network = SuperHadaMaxCNN(
+                **cnn_args,
+                num_paths=num_paths
             )
         else:
             raise NotImplementedError(f"Unknown cnn_type: {cnn_type}")

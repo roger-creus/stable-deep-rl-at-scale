@@ -357,3 +357,87 @@ class DenseNetMLP(nn.Module):
     
     def forward(self, x):
         return self.net(x)
+    
+    
+### SUPER HADAMAX MLP ###
+import torch.nn.functional as F
+
+class SEBlock1D(nn.Module):
+    def __init__(self, hidden_size, reduction=16, activation_fn="gelu", device='cpu'):
+        super().__init__()
+        reduced_size = max(1, hidden_size // reduction)
+        self.fc1 = nn.Linear(hidden_size, reduced_size, device=device)
+        self.act = get_act_fn_clss(activation_fn)()
+        self.fc2 = nn.Linear(reduced_size, hidden_size, device=device)
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x):
+        scale = self.fc2(self.act(self.fc1(x)))
+        scale = self.sigmoid(scale)
+        return x * scale
+    
+class LearnableHadaFusionMLPBlock(nn.Module):
+    def __init__(self, hidden_size, num_paths=4, use_ln=True,
+                 activation_fn='gelu', device='cpu', linear_clss=nn.Linear,
+                 se_reduction=16):
+        super().__init__()
+        self.paths = nn.ModuleList([
+            layer_init(linear_clss(hidden_size, hidden_size, device=device))
+            for _ in range(num_paths)
+        ])
+        self.lns = nn.ModuleList([
+            nn.LayerNorm(hidden_size, device=device) if use_ln else nn.Identity()
+            for _ in range(num_paths)
+        ])
+        self.fusion_weights = nn.Parameter(torch.ones(num_paths, device=device))
+        self.mix_proj = layer_init(linear_clss(hidden_size, hidden_size, device=device))
+        self.se = SEBlock1D(hidden_size, reduction=se_reduction, activation_fn=activation_fn, device=device)
+        self.act = get_act_fn_functional(activation_fn)
+        self.res_proj = linear_clss(hidden_size, hidden_size, device=device)
+
+    def forward(self, x):
+        outputs = [self.act(ln(fc(x))) for fc, ln in zip(self.paths, self.lns)]
+        weights = F.softmax(self.fusion_weights, dim=0)
+        fused = sum(w * o for w, o in zip(weights, outputs))
+        mixed = self.mix_proj(fused)
+        scaled = self.se(mixed)
+
+        # Residual connection (with projection if needed)
+        res = self.res_proj(x) if x.shape[-1] != scaled.shape[-1] else x
+        return scaled + res
+
+class SuperHadaMaxMLP(nn.Module):
+    def __init__(self,
+                 input_size,
+                 hidden_size,
+                 output_size,
+                 num_layers=1,
+                 last_act=False,
+                 use_ln=False,
+                 activation_fn='relu',
+                 use_spectral_norm=False,
+                 linear_clss=nn.Linear,
+                 device='cpu'
+                 ):
+        super().__init__()
+        layers = []
+        layers.append(layer_init(linear_clss(input_size, hidden_size, device=device)))
+        if use_ln:
+            layers.append(nn.LayerNorm(hidden_size, device=device))
+        layers.append(get_act_fn_clss(activation_fn)())
+        for _ in range(num_layers):
+            layers.append(LearnableHadaFusionMLPBlock(hidden_size, num_paths=4,
+                                                      use_ln=use_ln,
+                                                      activation_fn=activation_fn,
+                                                      device=device,
+                                                      linear_clss=linear_clss))
+        layers.append(layer_init(linear_clss(hidden_size, output_size, device=device)))
+        if use_ln:
+            layers.append(nn.LayerNorm(output_size, device=device))
+        if last_act:
+            layers.append(get_act_fn_clss(activation_fn)())
+        self.net = nn.Sequential(*layers)
+        self.output_size = output_size
+
+    def forward(self, x):
+        return self.net(x)

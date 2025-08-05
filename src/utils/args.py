@@ -80,9 +80,9 @@ class PQNArgs:
     measure_burnin: int = 1
     """Number of burn-in iterations for speed measure."""
 
-    compile: bool = False
+    compile: bool = True
     """whether to use torch.compile."""
-    cudagraphs: bool = False
+    cudagraphs: bool = True
     """whether to use cudagraphs on top of compile."""
     
     
@@ -169,8 +169,8 @@ class PPOArgs:
     measure_burnin: int = 1
     """Number of burn-in iterations for speed measure."""
 
-    compile: bool = False
+    compile: bool = True
     """whether to use torch.compile."""
-    cudagraphs: bool = False
+    cudagraphs: bool = True
     """whether to use cudagraphs on top of compile."""
     

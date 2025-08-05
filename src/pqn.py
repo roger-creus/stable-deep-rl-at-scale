@@ -22,6 +22,9 @@ from tensordict import from_module
 from tensordict.nn import CudaGraphModule
 from torch.distributions.categorical import Distribution
 
+import warnings
+warnings.filterwarnings("ignore", message="Online softmax is disabled on the fly*")
+
 Distribution.set_default_validate_args(False)
 torch.set_float32_matmul_precision("high")
 
@@ -121,6 +124,11 @@ update = tensordict.nn.TensorDictModule(
 if __name__ == "__main__":
     ####### Argument Parsing #######
     args = tyro.cli(PQNArgs)
+    
+    # kron does not support cudagraphs and compile
+    if args.optimizer == "kron":
+        args.compile = False
+        args.cudagraphs = False
     
     batch_size = int(args.num_envs * args.num_steps)
     args.minibatch_size = batch_size // args.num_minibatches
@@ -232,14 +240,6 @@ if __name__ == "__main__":
     prev_container = None
     avg_returns = deque(maxlen=20)
     avg_lengths = deque(maxlen=20)
-
-    layer_shapes_ = agent.get_layer_shapes()
-    mu_representations = {
-        k: torch.zeros(v, device=device) for k, v in layer_shapes_.items()
-    }
-    std_representations = {
-        k: torch.ones(v, device=device) for k, v in layer_shapes_.items()
-    }
     
     global_step = 0
     container_local = None
@@ -290,19 +290,10 @@ if __name__ == "__main__":
                 if (epoch == 0 and b_idx == 0 and global_step_burnin is not None and iteration in args.log_iterations):
                     try:
                         with torch.no_grad():
-                            max_to_keep = min(512, len(container_flat))
+                            max_to_keep = min(128, len(container_flat))
                             cntner_churn = container_flat[torch.randperm(len(container_flat))[:max_to_keep]]
                             churn_stats = compute_representation_and_q_churn(agent, old_agent, cntner_churn["obs"])
                             
-                        # Update per-layer representation stats.
-                        mu_representations = {
-                            k: 0.99 * mu_representations[k] + 0.01 * v.mean(0)
-                            for k, v in out["per_layer_representations"].items()
-                        }
-                        std_representations = {
-                            k: 0.99 * std_representations[k] + 0.01 * v.std(0)
-                            for k, v in out["per_layer_representations"].items()
-                        }
                     except Exception as e:
                         print(f"Failed to compute representation and q churn: {e}")
                         churn_stats = {}
