@@ -138,7 +138,8 @@ class ImpalaCNN(nn.Module):
         use_ln=False,
         activation_fn="relu",
         shape=(4, 84, 84),
-        device='cpu'
+        device='cpu',
+        impoola=False
     ):
         super().__init__()
         conv_seqs = []
@@ -157,7 +158,7 @@ class ImpalaCNN(nn.Module):
         
         conv_seqs += [
             activation,
-            nn.Flatten(),
+            nn.Flatten() if not impoola else nn.AdaptiveAvgPool2d(1)
         ]
         
         self.cnn = nn.Sequential(*conv_seqs)
@@ -345,6 +346,7 @@ class SuperHadaMaxCNN(nn.Module):
         in_channels  = 4,
         input_size   = 84,
         num_paths    = 4,
+        impoola=False,
         device='cuda'
     ):
         super().__init__()
@@ -372,7 +374,8 @@ class SuperHadaMaxCNN(nn.Module):
             pad = (pool_kernels[idx] - pool_strides[idx]) // 2 if pool_paddings[idx] is None else pool_paddings[idx]
             size = (size + 2*(pad or 0) - pool_kernels[idx]) // pool_strides[idx] + 1
             ic = oc
-        self.cnn = nn.Sequential(*blocks, nn.Flatten())
+            
+        self.cnn = nn.Sequential(*blocks, nn.Flatten() if not impoola else nn.AdaptiveAvgPool2d(1))
         self.output_size = ic * size * size
 
     def forward(self, x):

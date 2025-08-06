@@ -25,6 +25,7 @@ class BasePQNAgent(nn.Module):
         trunk_num_layers=1,
         activation_fn="relu",
         num_paths=4,
+        use_impoola=False,
         device=None
     ):
         super().__init__()
@@ -61,8 +62,13 @@ class BasePQNAgent(nn.Module):
             )
         elif cnn_type == "impala":
             self.network = ImpalaCNN(
-                **cnn_args
+                **cnn_args,
+                impoola=True if use_impoola else False
             )
+            if use_impoola:
+                trunk_hidden_size = cnn_channels[-1]
+                trunk_output_size = cnn_channels[-1]
+            
         elif cnn_type == "hadamax":
             self.network = HadaMaxCNN(
                 **cnn_args
@@ -70,8 +76,12 @@ class BasePQNAgent(nn.Module):
         elif cnn_type == "super_hadamax":
             self.network = SuperHadaMaxCNN(
                 **cnn_args,
-                num_paths=num_paths
+                num_paths=num_paths,
+                impoola=True if use_impoola else False
             )
+            if use_impoola:
+                trunk_hidden_size = cnn_channels[-1]
+                trunk_output_size = cnn_channels[-1]
         else:
             raise NotImplementedError(f"Unknown cnn_type: {cnn_type}")
         
@@ -233,6 +243,7 @@ class PQNAgent(BasePQNAgent):
         trunk_output_size=512,
         trunk_num_layers=1,
         activation_fn="relu",
+        use_impoola=False,
         device=None
     ):
         super().__init__(
@@ -246,12 +257,13 @@ class PQNAgent(BasePQNAgent):
             trunk_output_size=trunk_output_size,
             trunk_num_layers=trunk_num_layers,
             activation_fn=activation_fn,
+            use_impoola=use_impoola,
             device=device
         )
         act_ = get_act_fn_clss(activation_fn)
         self.q_func = nn.Sequential(
             act_(),
-            layer_init(nn.Linear(trunk_output_size, self.action_dim, device=device), std=0.01),
+            layer_init(nn.Linear(trunk_output_size if not use_impoola else cnn_channels[-1], self.action_dim, device=device), std=0.01),
         )
 
     def forward(self, x):

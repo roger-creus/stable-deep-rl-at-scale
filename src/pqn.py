@@ -190,6 +190,7 @@ if __name__ == "__main__":
         "mlp_type": args.mlp_type,
         "trunk_hidden_size": trunk_hidden_size,
         "trunk_num_layers": trunk_num_layers,
+        "use_impoola": args.use_impoola,
         "device": device,
     }
     agent = PQNAgent(**agent_cfg)

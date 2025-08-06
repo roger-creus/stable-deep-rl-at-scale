@@ -54,9 +54,9 @@ class PQNArgs:
     """whether to use layer normalization"""
     use_spectral_norm: bool = False
     """whether to use spectral normalization"""
-    cnn_type: str = "atari"
+    cnn_type: str = "atari" # atari, impala, hadamax, super_hadamax, impoola
     """the type of the CNN"""
-    mlp_type: str = "default" #default,residual,multiskip,densenet
+    mlp_type: str = "default" #default,residual,multiskip,densenet,super_hadamax
     """the type of the MLP"""
     cnn_size: str = "medium" # small, medium, large
     """the size of the network"""
@@ -68,6 +68,8 @@ class PQNArgs:
     """the activation function of the network"""
     optimizer: str = "radam" # radam, kron
     """the optimizer of the network"""
+    use_impoola: bool = False
+    """whether to use GAP (only compatible with residual and super_hadamax)"""
     
     # to be filled in runtime
     batch_size: int = 0
