@@ -94,7 +94,7 @@ python src/cifar.py --mlp_type=multiskip_residual --use_ln --optimizer=kron
 ## 📄 Citation
 Please cite the original [NeurIPS paper](https://arxiv.org/abs/2506.15544):
 
-```bash
+```
 @article{castanyer2025stable,
   title={Stable Gradients for Stable Learning at Scale in Deep Reinforcement Learning},
   author={Castanyer, Roger Creus and Obando-Ceron, Johan and Li, Lu and Bacon, Pierre-Luc and Berseth, Glen and Courville, Aaron and Castro, Pablo Samuel},
