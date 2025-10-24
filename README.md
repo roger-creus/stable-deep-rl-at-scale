@@ -6,6 +6,8 @@ This repository contains the code for the paper:
 by *Roger Creus Castanyer, Johan Obando-Ceron, Lu Li, Pierre-Luc Bacon, Glen Berseth, Aaron Courville, and Pablo Samuel Castro*  
 *Work done at Mila Quebec AI Institute and University of Montreal.*
 
+Published at NeurIPS 2025 (Spotlight ⭐ - top ~3% of submissions)
+
 ## 📄 **[Read the Full Paper on arXiv ▶️](https://arxiv.org/pdf/2506.15544.pdf)**
 ---
 
@@ -90,6 +92,14 @@ python src/cifar.py --mlp_type=multiskip_residual --use_ln --optimizer=kron
 ---
 
 ## 📄 Citation
+Please cite the original [NeurIPS paper](https://arxiv.org/abs/2506.15544):
 
-If you use this codebase in your research, please cite the original paper.
+```bash
+@article{castanyer2025stable,
+  title={Stable Gradients for Stable Learning at Scale in Deep Reinforcement Learning},
+  author={Castanyer, Roger Creus and Obando-Ceron, Johan and Li, Lu and Bacon, Pierre-Luc and Berseth, Glen and Courville, Aaron and Castro, Pablo Samuel},
+  journal={arXiv preprint arXiv:2506.15544},
+  year={2025}
+}
+```
 
